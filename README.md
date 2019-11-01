@@ -1,3 +1,5 @@
+# 阅读 etcd 源码
+更新至代码 v3.4.3 版本
 # etcd
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/etcd-io/etcd?style=flat-square)](https://goreportcard.com/report/github.com/etcd-io/etcd)
