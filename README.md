@@ -1,5 +1,8 @@
 # 阅读 etcd 源码
-更新至代码 v3.4.3 版本
+为了方便自己阅读,测试etcd源码,建立了此仓库,如果能帮助到同样对 etcd 源码感兴趣的朋友,就再好不过了.  
+代码更新至 v3.4.3 版本
+
+**友情提示:欲练此功 比先阅读一遍 [raft 论文](https://raft.github.io/)**
 # etcd
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/etcd-io/etcd?style=flat-square)](https://goreportcard.com/report/github.com/etcd-io/etcd)

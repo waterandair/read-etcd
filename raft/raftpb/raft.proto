@@ -9,17 +9,20 @@ option (gogoproto.unmarshaler_all) = true;
 option (gogoproto.goproto_getters_all) = false;
 option (gogoproto.goproto_enum_prefix_all) = false;
 
+// EntryType Entry 的类型
 enum EntryType {
-	EntryNormal       = 0;
-	EntryConfChange   = 1; // corresponds to pb.ConfChange
+	EntryNormal       = 0;  // 普通的数据操作
+	EntryConfChange   = 1; // 集群的变更操作 corresponds to pb.ConfChange
 	EntryConfChangeV2 = 2; // corresponds to pb.ConfChangeV2
 }
 
+// Entry etcd 将每个独立的操作封装成一个 entry; 客户端发送消息给集群的单位是 Message, Message 中包含一个或多个 Entry.
+// 各个节点中本地日志的单位也是 Entry
 message Entry {
-	optional uint64     Term  = 2 [(gogoproto.nullable) = false]; // must be 64-bit aligned for atomic operations
-	optional uint64     Index = 3 [(gogoproto.nullable) = false]; // must be 64-bit aligned for atomic operations
-	optional EntryType  Type  = 1 [(gogoproto.nullable) = false];
-	optional bytes      Data  = 4;
+	optional uint64     Term  = 2 [(gogoproto.nullable) = false]; // Entry 所在的任期号 // 原子操作必须64位对齐 must be 64-bit aligned for atomic operations
+	optional uint64     Index = 3 [(gogoproto.nullable) = false]; // Entry 所在的索引号 // must be 64-bit aligned for atomic operations
+	optional EntryType  Type  = 1 [(gogoproto.nullable) = false]; // Entry 的类型
+	optional bytes      Data  = 4;  // 具体的数据
 }
 
 message SnapshotMetadata {
@@ -55,19 +58,23 @@ enum MessageType {
 	MsgPreVoteResp     = 18;
 }
 
+//  Message 所有消息的抽象
 message Message {
-	optional MessageType type        = 1  [(gogoproto.nullable) = false];  //
-	optional uint64      to          = 2  [(gogoproto.nullable) = false];  //
-	optional uint64      from        = 3  [(gogoproto.nullable) = false];
-	optional uint64      term        = 4  [(gogoproto.nullable) = false];
-	optional uint64      logTerm     = 5  [(gogoproto.nullable) = false];
-	optional uint64      index       = 6  [(gogoproto.nullable) = false];
-	repeated Entry       entries     = 7  [(gogoproto.nullable) = false];
-	optional uint64      commit      = 8  [(gogoproto.nullable) = false];
-	optional Snapshot    snapshot    = 9  [(gogoproto.nullable) = false];
-	optional bool        reject      = 10 [(gogoproto.nullable) = false];
-	optional uint64      rejectHint  = 11 [(gogoproto.nullable) = false];
-	optional bytes       context     = 12;
+	optional MessageType type        = 1  [(gogoproto.nullable) = false];  // 消息的类型, raft 根据这个字段辨别不同类型的消息,对它们分别做处理
+	optional uint64      to          = 2  [(gogoproto.nullable) = false];  // 消息的目标节点ID
+	optional uint64      from        = 3  [(gogoproto.nullable) = false];  // 发送消息的节点 ID
+	optional uint64      term        = 4  [(gogoproto.nullable) = false];  // 发送消息的节点的 Term 值. 为 0 时表示本地消息.
+	optional uint64      logTerm     = 5  [(gogoproto.nullable) = false];  // 该消息携带的第一条 Entry 记录的 Term 值.
+	optional uint64      index       = 6  [(gogoproto.nullable) = false];  // 索引值,不同的消息类型 索引值代表的意义不同:
+																				// MsgApp: 表示其携带的 entrys 中前一条记录的索引值
+																				// MsgAppResp: Follower 节点提示 Leader 节点下次从哪个位置开始发送 Entry 记录,, 即告知 Leader 正确的 nextindex
+	repeated Entry       entries     = 7  [(gogoproto.nullable) = false];  // Entry 集合, 不同类型的消息发送的 Entry 内容不同:
+																				// MsgApp: 表示 Leader 节点复制给 Follower 节点的 Entry 记录.
+	optional uint64      commit      = 8  [(gogoproto.nullable) = false];  // 消息发送节点的提交位置(commitIndex)
+	optional Snapshot    snapshot    = 9  [(gogoproto.nullable) = false];  // 在传输快照时,该字段用于保存快照
+	optional bool        reject      = 10 [(gogoproto.nullable) = false];  // 是否拒绝收到的消息.这个字段用于响应类型的消息.
+	optional uint64      rejectHint  = 11 [(gogoproto.nullable) = false];  // Follower 节点的拒绝 Leader 节点的消息后,会在响应时的 rejectHint 记录合适的 Entry 索引值供 Leader 节点参考
+	optional bytes       context     = 12;  // 记录消息的一些上下文信息,比如消息是否与 Leader 节点转移
 }
 
 message HardState {

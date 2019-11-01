@@ -102,10 +102,11 @@ type CampaignType string
 type StateType uint64
 
 var stmap = [...]string{
-	"StateFollower",
-	"StateCandidate",
-	"StateLeader",
-	"StatePreCandidate",
+	"StateFollower",     // 跟随者
+	"StateCandidate",    // 候选人
+	"StateLeader",       // 领导者
+	"StatePreCandidate", // todo 在 Follower 节点超时准备进入候选人前, 为了避免因为网络分区或其他原因引起的循环选举,
+	// 要在这里先检查当前节点是否和和超过半数的节点通信,此时节点的状态为 StatePreCandidate
 }
 
 func (st StateType) String() string {
@@ -251,34 +252,36 @@ func (c *Config) validate() error {
 	return nil
 }
 
+// raft 封装了当前节点所有核心数据
 type raft struct {
-	id uint64  // 当前节点在集群中的 ID
+	id uint64 // 当前节点在集群中的 ID
 
-	Term uint64  // 当前任期号, Term 为0 表示为本地消息
-	Vote uint64  //
+	Term uint64 // 当前任期号, Term 为 0 表示为本地消息 (即 raft 论文中的 currentTerm)
+	Vote uint64 // 当前任期中当前节点将选票投给了哪个节点, (即 raft 论文中的 votedFor)
 
-	readStates []ReadState
+	readStates []ReadState // todo 只读请求
+	readOnly   *readOnly   // todo 只读请求
 
 	// the log
-	raftLog *raftLog
+	raftLog *raftLog // 本地 Log
 
-	maxMsgSize         uint64
+	maxMsgSize         uint64 // 阈值,单条消息的最大字节数
 	maxUncommittedSize uint64
 	// TODO(tbg): rename to trk.
-	prs tracker.ProgressTracker
+	prs tracker.ProgressTracker // 追踪器, 对于 Leader 节点, prs 还负责管理各个 Follower 节点的信息和对应的 NextIndex 和 MatchIndex 索引. 详细介绍可查看 Process 类型 ./raft/tracker/progress.go
 
-	state StateType
+	state StateType // 当前节点在集群中的角色
 
 	// isLearner is true if the local raft node is a learner.
-	isLearner bool
+	isLearner bool // 标记是否为 Leader 节点
 
-	msgs []pb.Message
+	msgs []pb.Message // 缓存了当前节点等待发送的消息
 
 	// the leader id
-	lead uint64
+	lead uint64 // 当前集群中 Leader 节点的 ID
 	// leadTransferee is id of the leader transfer target when its value is not zero.
 	// Follow the procedure defined in raft thesis 3.10.
-	leadTransferee uint64
+	leadTransferee uint64 // 当发生 Leader 节点转移时,记录转移的目标节点
 	// Only one conf change may be pending (in the log, but not yet
 	// applied) at a time. This is enforced via pendingConfIndex, which
 	// is set to a value >= the log index of the latest pending
@@ -291,31 +294,37 @@ type raft struct {
 	// term changes.
 	uncommittedSize uint64
 
-	readOnly *readOnly
-
 	// number of ticks since it reached last electionTimeout when it is leader
 	// or candidate.
 	// number of ticks since it reached last electionTimeout or received a
 	// valid message from current leader when it is a follower.
-	electionElapsed int
+	electionElapsed int // 选举计时器的指针,其单位是逻辑时钟的刻度,逻辑时钟每推进一次 ,该字段值就会增加 1 。
 
 	// number of ticks since it reached last heartbeatTimeout.
 	// only leader keeps heartbeatElapsed.
-	heartbeatElapsed int
+	heartbeatElapsed int // 心跳计时器的指针,其单位也是逻辑时钟的刻度,逻辑时钟每推进一次,该字段值就会增加 1 。
 
-	checkQuorum bool
-	preVote     bool
+	checkQuorum bool // 每隔一段时间, Leader 节点会尝试连接集群中的其他节点(发送心跳消息),如果发现自己可以连接到节点个数
+	// 没有超过半数(即没有收到足够的心跳响应),则主动切换成 Follower 状态。这样在网络分区的场景中,旧的 Leader 节点
+	// 可以很快知道自己已经过期,可以减少 Client 连接旧 Leader 节点的等待时间 。
 
-	heartbeatTimeout int
-	electionTimeout  int
+	preVote bool // 为了避免由于网络分区或 Follower 自身网络问题导致的 Follower 节点循环发起选举.当 Follower 节点准备发起一次
+	// 选举之前,会先连接集群中的其他节点,并询问它们是否愿意参与选举,如果集群中的其他节点能够正常收到 Leader 节点的心
+	// 跳消息,则会拒绝参与选举,反之则参与选举。当在 PreVote 过程中,有超过半数的节点响应并参与新一轮选举,则可以发起新一轮的选举。
+
+	heartbeatTimeout int // 心跳超时时间, 当 heartb eatE l apsed 字段值到达该值时, 就会触发 Leader 节点发送一条心跳消息。
+	electionTimeout  int // 选举超时时间,用于计算随机选举超时间
 	// randomizedElectionTimeout is a random number between
 	// [electiontimeout, 2 * electiontimeout - 1]. It gets reset
 	// when raft changes its state to follower or candidate.
-	randomizedElectionTimeout int
+	randomizedElectionTimeout int // 当 electionElapsed 宇段值到达该值时,就会触发新一轮的选举。 为了避免同一时刻集群中有多个 Follower
+	// 节点发起选举瓜分选票, 所以将各个节点的选举超时时间设置为一个合理的随机数,就可以有效避免这个问题
 	disableProposalForwarding bool
 
-	tick func()
-	step stepFunc
+	tick func() // 当前节点推进逻辑时钟的函数。如果当前节点是 Leader ,则指向 raft.tickHeart() 函数,如果当前节点是 Follower 或是 Candidate ,则指向 raft. tickElection()函数 。
+
+	step stepFunc // 当前节点收到消息时的处理函数。如果是 Leader 节点, 则该字段指向 stepLeader()函数,如果是 Follower 节点,则该字段指向 stepFollower()函数,
+	// 如果是处于 preVote 阶段的节点或是 Candidate 节点,则该字段指向 step Candidate()函数。
 
 	logger Logger
 }
@@ -933,9 +942,9 @@ func (r *raft) Step(m pb.Message) error {
 	case pb.MsgVote, pb.MsgPreVote:
 		// We can vote if this is a repeat of a vote we've already cast...
 		canVote := r.Vote == m.From ||
-			// ...we haven't voted and we don't think there's a leader yet in this term...
+		// ...we haven't voted and we don't think there's a leader yet in this term...
 			(r.Vote == None && r.lead == None) ||
-			// ...or this is a PreVote for a future term...
+		// ...or this is a PreVote for a future term...
 			(m.Type == pb.MsgPreVote && m.Term > r.Term)
 		// ...and we believe the candidate is up to date.
 		if canVote && r.raftLog.isUpToDate(m.Index, m.LogTerm) {

@@ -28,7 +28,11 @@ import (
 // strewn around `*raft.raft`. Additionally, some fields are only used when in a
 // certain State. All of this isn't ideal.
 type Progress struct {
-	Match, Next uint64
+	Match uint64  // 对应 Follower 节点当前已经复制成功的 Entry 记录的索引值
+	Next  uint64  // 对应 Follower 节点下一个待复制的 Entry 记录的索引值。
+	// 大都数情况下 Match + 1 = Next;
+	// 当一个 Candidates (候选人) 转换为 Leader (领导者) 的时候, 不知道上一个 Leader 维护的 Next 和 Match, 所以它会将 Next 重置为自己的最大日志索引值+1, 将 Match 重置为 0
+
 	// State defines how the leader should interact with the follower.
 	//
 	// When in StateProbe, leader sends at most one replication message
@@ -40,26 +44,27 @@ type Progress struct {
 	//
 	// When in StateSnapshot, leader should have sent out snapshot
 	// before and stops sending any replication message.
-	State StateType
+
+	State StateType  // 对应 Follower 节点的复制状态
 
 	// PendingSnapshot is used in StateSnapshot.
 	// If there is a pending snapshot, the pendingSnapshot will be set to the
 	// index of the snapshot. If pendingSnapshot is set, the replication process of
 	// this Progress will be paused. raft will not resend snapshot until the pending one
 	// is reported to be failed.
-	PendingSnapshot uint64
+	PendingSnapshot uint64  // 当前正在发送的快照数据信息
 
 	// RecentActive is true if the progress is recently active. Receiving any messages
 	// from the corresponding follower indicates the progress is active.
 	// RecentActive can be reset to false after an election timeout.
 	//
 	// TODO(tbg): the leader should always have this set to true.
-	RecentActive bool
+	RecentActive bool  // 当前 Leader 节点的角度看, 该 Process 实例对应的 Follow 节点是否存活, 对于Leader 节点,这个值需要总是被设置为 true
 
 	// ProbeSent is used while this follower is in StateProbe. When ProbeSent is
 	// true, raft should pause sending replication message to this peer until
 	// ProbeSent is reset. See ProbeAcked() and IsPaused().
-	ProbeSent bool
+	ProbeSent bool  // 当前 Leader 节点是否可以向该 Process 实例对应的 Follower 节点发送消息
 
 	// Inflights is a sliding window for the inflight messages.
 	// Each inflight message contains one or more log entries.
@@ -73,7 +78,7 @@ type Progress struct {
 	// When a leader receives a reply, the previous inflights should
 	// be freed by calling inflights.FreeLE with the index of the last
 	// received entry.
-	Inflights *Inflights
+	Inflights *Inflights  // 记录了已经发送出去但是还没有收到响应的消息信息.
 
 	// IsLearner is true if this progress is tracked for a learner.
 	IsLearner bool
