@@ -116,18 +116,18 @@ func (st StateType) String() string {
 // Config contains the parameters to start a raft.
 type Config struct {
 	// ID is the identity of the local raft. ID cannot be 0.
-	ID uint64
+	ID uint64 // 当前节点的 ID
 
 	// peers contains the IDs of all nodes (including self) in the raft cluster. It
 	// should only be set when starting a new raft cluster. Restarting raft from
 	// previous configuration will panic if peers is set. peer is private and only
 	// used for testing right now.
-	peers []uint64
+	peers []uint64 // 集群中所有节点的 ID
 
 	// learners contains the IDs of all learner nodes (including self if the
 	// local node is a learner) in the raft cluster. learners only receives
 	// entries from the leader node. It does not vote or promote itself.
-	learners []uint64
+	learners []uint64 // TODO learners
 
 	// ElectionTick is the number of Node.Tick invocations that must pass between
 	// elections. That is, if a follower does not receive any message from the
@@ -135,29 +135,29 @@ type Config struct {
 	// candidate and start an election. ElectionTick must be greater than
 	// HeartbeatTick. We suggest ElectionTick = 10 * HeartbeatTick to avoid
 	// unnecessary leader switching.
-	ElectionTick int
+	ElectionTick int // 选举超时时间
 	// HeartbeatTick is the number of Node.Tick invocations that must pass between
 	// heartbeats. That is, a leader sends heartbeat messages to maintain its
 	// leadership every HeartbeatTick ticks.
-	HeartbeatTick int
+	HeartbeatTick int // 心跳间隔时间
 
 	// Storage is the storage for raft. raft generates entries and states to be
 	// stored in storage. raft reads the persisted entries and states out of
 	// Storage when it needs. raft reads out the previous state and configuration
 	// out of storage when restarting.
-	Storage Storage
+	Storage Storage // 保存日志的接口
 	// Applied is the last applied index. It should only be set when restarting
 	// raft. raft will not return entries to the application smaller or equal to
 	// Applied. If Applied is unset when restarting, raft might return previous
 	// applied entries. This is a very application dependent configuration.
-	Applied uint64
+	Applied uint64 // 当前节点已经应用的最后一条 Entry 记录的索引值,这个值在重启时需要设置,否则会重新应用已经应用过的 Entry 记录
 
 	// MaxSizePerMsg limits the max byte size of each append message. Smaller
 	// value lowers the raft recovery cost(initial probing and message lost
 	// during normal operation). On the other side, it might affect the
 	// throughput during normal replication. Note: math.MaxUint64 for unlimited,
 	// 0 for at most one entry per message.
-	MaxSizePerMsg uint64
+	MaxSizePerMsg uint64 // 每条消息的最大字节数, math.MaxUint64 表示没有上限, 0 表示每条消息最多携带一条 Entry
 	// MaxCommittedSizePerReady limits the size of the committed entries which
 	// can be applied.
 	MaxCommittedSizePerReady uint64
@@ -171,16 +171,16 @@ type Config struct {
 	// has its own sending buffer over TCP/UDP. Setting MaxInflightMsgs to avoid
 	// overflowing that sending buffer. TODO (xiangli): feedback to application to
 	// limit the proposal rate?
-	MaxInflightMsgs int
+	MaxInflightMsgs int // 阈值: 已发出但未收到响应的最大消息个数
 
 	// CheckQuorum specifies if the leader should check quorum activity. Leader
 	// steps down when quorum is not active for an electionTimeout.
-	CheckQuorum bool
+	CheckQuorum bool // 是否开启 CheckQuorum, leader 定义检查能不能和至少半数的 Follower 通信
 
 	// PreVote enables the Pre-Vote algorithm described in raft thesis section
 	// 9.6. This prevents disruption when a node that has been partitioned away
 	// rejoins the cluster.
-	PreVote bool
+	PreVote bool // 是否开启 PreVote 模式, 在发起选举前检查是否可以和至少半数的 Follower 节点通信
 
 	// ReadOnlyOption specifies how the read only request is processed.
 	//
@@ -193,7 +193,7 @@ type Config struct {
 	// should (clock can move backward/pause without any bound). ReadIndex is not safe
 	// in that case.
 	// CheckQuorum MUST be enabled if ReadOnlyOption is ReadOnlyLeaseBased.
-	ReadOnlyOption ReadOnlyOption
+	ReadOnlyOption ReadOnlyOption  // todo
 
 	// Logger is the logger used for raft log. For multinode which can host
 	// multiple raft group, each raft group can have its own logger
