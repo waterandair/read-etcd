@@ -2,7 +2,9 @@
 为了方便自己阅读,测试etcd源码,建立了此仓库,如果能帮助到同样对 etcd 源码感兴趣的朋友,就再好不过了.  
 代码更新至 v3.4.3 版本
 
-**友情提示:欲练此功 比先阅读一遍 [raft 论文](https://raft.github.io/)**
+**友情提示:欲练此功 比先阅读一遍 [raft 论文](https://raft.github.io/)**   
+
+代码注释中在一些关键部分对英文注释进行了翻译并且加入了一些自己的理解,但任然保留了原英文翻译.
 # etcd
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/etcd-io/etcd?style=flat-square)](https://goreportcard.com/report/github.com/etcd-io/etcd)

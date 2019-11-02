@@ -27,8 +27,8 @@ message Entry {
 
 message SnapshotMetadata {
 	optional ConfState conf_state = 1 [(gogoproto.nullable) = false];
-	optional uint64    index      = 2 [(gogoproto.nullable) = false];
-	optional uint64    term       = 3 [(gogoproto.nullable) = false];
+	optional uint64    index      = 2 [(gogoproto.nullable) = false];  // 快照中最后一条 Entry 记录的索引值
+	optional uint64    term       = 3 [(gogoproto.nullable) = false];  // 快照中最一条 Entry 记录的任期值
 }
 
 message Snapshot {
