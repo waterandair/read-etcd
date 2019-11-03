@@ -209,12 +209,14 @@ func DescribeEntries(ents []pb.Entry, f EntryFormatter) string {
 	return buf.String()
 }
 
+// 限制返回 Entry 切片的总字节大小
 func limitSize(ents []pb.Entry, maxSize uint64) []pb.Entry {
 	if len(ents) == 0 {
 		return ents
 	}
 	size := ents[0].Size()
 	var limit int
+	// limit 初始等于 1, 所以至少会返回一条
 	for limit = 1; limit < len(ents); limit++ {
 		size += ents[limit].Size()
 		if uint64(size) > maxSize {

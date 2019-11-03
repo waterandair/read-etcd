@@ -339,6 +339,11 @@ func TestUnstableTruncateAndAppend(t *testing.T) {
 			[]pb.Entry{{Index: 7, Term: 2}, {Index: 8, Term: 2}},
 			5, []pb.Entry{{Index: 5, Term: 1}, {Index: 6, Term: 1}, {Index: 7, Term: 2}, {Index: 8, Term: 2}},
 		},
+		{
+			[]pb.Entry{{Index: 5, Term: 1}, {Index: 6, Term: 1}, {Index: 7, Term: 1}}, 5, nil,
+			[]pb.Entry{{Index: 10, Term: 2}, {Index: 11, Term: 2}},
+			5, []pb.Entry{{Index: 5, Term: 1}, {Index: 6, Term: 1}, {Index: 7, Term: 2}, {Index: 8, Term: 2}},
+		},
 	}
 
 	for i, tt := range tests {

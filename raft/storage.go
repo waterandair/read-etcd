@@ -195,6 +195,7 @@ func (ms *MemoryStorage) ApplySnapshot(snap pb.Snapshot) error {
 	// handle check for old snapshot being applied
 	msIndex := ms.snapshot.Metadata.Index // 旧快照中最后一条 Entry 记录的索引值
 	snapIndex := snap.Metadata.Index      // 新快照中最后一条 Entry 记录的索引值
+	// 快照的最后一条索引只增不减
 	if msIndex >= snapIndex {
 		return ErrSnapOutOfDate
 	}
@@ -208,30 +209,39 @@ func (ms *MemoryStorage) ApplySnapshot(snap pb.Snapshot) error {
 // can be used to reconstruct the state at that point.
 // If any configuration changes have been made since the last compaction,
 // the result of the last ApplyConfChange must be passed in.
+// 参数 i 是新建快照包含的最大索引值, cs 表示当前集群的状态, data 是新建 snapshot 的具体数据.
+// 如果上次建立快照之后,配置发生了改变,需要将最后一次 ApplyConfChange 的结果传入
 func (ms *MemoryStorage) CreateSnapshot(i uint64, cs *pb.ConfState, data []byte) (pb.Snapshot, error) {
 	ms.Lock()
 	defer ms.Unlock()
+
+	// 新建的快照的最后一个索引, 必须大于当前快照中最后一个索引, 必须小于当前本地的最大索引
 	if i <= ms.snapshot.Metadata.Index {
 		return pb.Snapshot{}, ErrSnapOutOfDate
 	}
 
-	offset := ms.ents[0].Index
 	if i > ms.lastIndex() {
 		raftLogger.Panicf("snapshot %d is out of bound lastindex(%d)", i, ms.lastIndex())
 	}
 
-	ms.snapshot.Metadata.Index = i
-	ms.snapshot.Metadata.Term = ms.ents[i-offset].Term
+	offset := ms.ents[0].Index // 上一次快照的最后一个索引
+
+	ms.snapshot.Metadata.Index = i                     // 更新当前快照的最后一个 Entry 的索引值
+	ms.snapshot.Metadata.Term = ms.ents[i-offset].Term // 更新当前快照的最后一个 Entry 的任期值
 	if cs != nil {
-		ms.snapshot.Metadata.ConfState = *cs
+		ms.snapshot.Metadata.ConfState = *cs // 更新当前集群的状态
 	}
-	ms.snapshot.Data = data
+	ms.snapshot.Data = data // 更新具体的快照数据
 	return ms.snapshot, nil
+	// 新建快照后,一般会接着调用 func (ms *MemoryStorage) Compact(compactIndex uint64) 方法将本地 Entries 中已存入快照中的索引抛弃,
+	// 以此实现压缩本地日志的效果
 }
 
 // Compact discards all log entries prior to compactIndex.
 // It is the application's responsibility to not attempt to compact an index
 // greater than raftLog.applied.
+// Compact 丢弃所有  compactIndex 及之前所有的 entries
+// 这里不保证 compactIndex <= raftLog.applied(todo 应用到状态机的索引位置), 这个应该由应用程序去保证
 func (ms *MemoryStorage) Compact(compactIndex uint64) error {
 	ms.Lock()
 	defer ms.Unlock()
