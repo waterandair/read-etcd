@@ -21,38 +21,43 @@ import (
 	pb "go.etcd.io/etcd/raft/raftpb"
 )
 
+// raftLog 管理节点上的日志
 type raftLog struct {
 	// storage contains all stable entries since the last snapshot.
+	// 保存了快照数据和自快照后的 entry， Storage 保存的都是稳定的 Entry
 	storage Storage
 
-	// unstable contains all unstable entries and snapshot.
-	// they will be saved into storage.
+	// unstable contains all unstable entries and snapshot. they will be saved into storage.
+	// 保存不稳定的快照和Entry， 它们将被存入 Storage
 	unstable unstable
 
-	// committed is the highest log position that is known to be in
-	// stable storage on a quorum of nodes.
+	// committed is the highest log position that is known to be in stable storage on a quorum of nodes.
+	// 已提交的位置， 即 Entry 记录中最大的索引位置位置
 	committed uint64
+
 	// applied is the highest log position that the application has
 	// been instructed to apply to its state machine.
 	// Invariant: applied <= committed
+	// 已应用的位置， 它是由应用程序指定的，已经被应用程序应用到了自己的状态机的 Entry 索引记录
 	applied uint64
 
 	logger Logger
 
 	// maxNextEntsSize is the maximum number aggregate byte size of the messages
 	// returned from calls to nextEnts.
+	// nextEnts 函数返回的最大的字节数
 	maxNextEntsSize uint64
 }
 
 // newLog returns log using the given storage and default options. It
 // recovers the log to the state that it just commits and applies the
 // latest snapshot.
+// 它将日志恢复到刚刚提交和应用的最近的快照的位置
 func newLog(storage Storage, logger Logger) *raftLog {
 	return newLogWithSize(storage, logger, noLimit)
 }
 
-// newLogWithSize returns a log using the given storage and max
-// message size.
+// newLogWithSize returns a log using the given storage and max message size.
 func newLogWithSize(storage Storage, logger Logger, maxNextEntsSize uint64) *raftLog {
 	if storage == nil {
 		log.Panic("storage must not be nil")
@@ -83,9 +88,14 @@ func (l *raftLog) String() string {
 	return fmt.Sprintf("committed=%d, applied=%d, unstable.offset=%d, len(unstable.Entries)=%d", l.committed, l.applied, l.unstable.offset, len(l.unstable.entries))
 }
 
-// maybeAppend returns (0, false) if the entries cannot be appended. Otherwise,
-// it returns (last index of new entries, true).
+// maybeAppend returns (0, false) if the entries cannot be appended. Otherwise, it returns (last index of new entries, true).
+// 追加 entries 日志
+// 参数： index： MsgApp（即 Append Entries） 类型的消息携带的第一条 Entry 的索引值
+//       logTerm： MsgApp 消息的任期
+//       committed： 已提交的索引位置， Leader 通过这个字段通知 Follower 节点当前已提交的位置
+//       ents： MsgApp 消息携带的 entryies 数据
 func (l *raftLog) maybeAppend(index, logTerm, committed uint64, ents ...pb.Entry) (lastnewi uint64, ok bool) {
+	// 通过 index 和 logTerm 检查此条消息的有效性
 	if l.matchTerm(index, logTerm) {
 		lastnewi = index + uint64(len(ents))
 		ci := l.findConflict(ents)
@@ -230,16 +240,19 @@ func (l *raftLog) lastTerm() uint64 {
 
 func (l *raftLog) term(i uint64) (uint64, error) {
 	// the valid term range is [index of dummy entry, last index]
+	//  dummy entry ： 如果有快照，就表示快照的最后一个 entry 的索引， 如果没有快照，就是 0
 	dummyIndex := l.firstIndex() - 1
 	if i < dummyIndex || i > l.lastIndex() {
 		// TODO: return an error instead?
 		return 0, nil
 	}
 
+	// 先从 unstable 中找对应索引的任期值
 	if t, ok := l.unstable.maybeTerm(i); ok {
 		return t, nil
 	}
 
+	// unstable 中没有找到，就再去 storage 中找
 	t, err := l.storage.Term(i)
 	if err == nil {
 		return t, nil
@@ -281,7 +294,7 @@ func (l *raftLog) isUpToDate(lasti, term uint64) bool {
 }
 
 func (l *raftLog) matchTerm(i, term uint64) bool {
-	t, err := l.term(i)
+	t, err := l.term(i)  //  查询指定索引位置的任期值
 	if err != nil {
 		return false
 	}
