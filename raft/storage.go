@@ -47,6 +47,7 @@ type Storage interface {
 	// TODO(tbg): split this into two interfaces, LogStorage and StateStorage.
 
 	// InitialState returns the saved HardState and ConfState information.
+
 	// 返回 Storage 中记录的状态信息,返回的是 HardState 实例和 ConfState 实例
 	// HardState 中存储了节点的状态信息,包含 Term (当前任期号),Vote (当前任期将选票投给了那个目标节点), Commit(最后一条已提交的Entry的索引值)
 	// ConfState 中存储了当前集群中所有节点的 ID
@@ -129,10 +130,11 @@ func (ms *MemoryStorage) Entries(lo, hi, maxSize uint64) ([]pb.Entry, error) {
 	if lo <= offset {
 		return nil, ErrCompacted
 	}
+
 	if hi > ms.lastIndex()+1 {
 		raftLogger.Panicf("entries' hi(%d) is out of bound lastindex(%d)", hi, ms.lastIndex())
 	}
-	// only contains dummy entries.
+	// only contains dummy entries.   // suggestion: 这个判断放到最前面
 	if len(ms.ents) == 1 {
 		return nil, ErrUnavailable
 	}
@@ -142,6 +144,7 @@ func (ms *MemoryStorage) Entries(lo, hi, maxSize uint64) ([]pb.Entry, error) {
 }
 
 // Term implements the Storage interface.
+// 注意只能取到不在快照中的索引的 term
 func (ms *MemoryStorage) Term(i uint64) (uint64, error) {
 	ms.Lock()
 	defer ms.Unlock()

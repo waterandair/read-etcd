@@ -75,6 +75,7 @@ func newLogWithSize(storage Storage, logger Logger, maxNextEntsSize uint64) *raf
 	if err != nil {
 		panic(err) // TODO(bdarnell)
 	}
+
 	log.unstable.offset = lastIndex + 1
 	log.unstable.logger = logger
 	// Initialize our committed and applied pointers to the time of the last compaction.
@@ -90,20 +91,25 @@ func (l *raftLog) String() string {
 
 // maybeAppend returns (0, false) if the entries cannot be appended. Otherwise, it returns (last index of new entries, true).
 // 追加 entries 日志
-// 参数： index： MsgApp（即 Append Entries） 类型的消息携带的第一条 Entry 的索引值
+// 参数： index： MsgApp（即 Append Entries） 类型的消息携带的第一条 Entry 的索引值 todo: 这个 index 的含义待验证
 //       logTerm： MsgApp 消息的任期
 //       committed： 已提交的索引位置， Leader 通过这个字段通知 Follower 节点当前已提交的位置
 //       ents： MsgApp 消息携带的 entryies 数据
 func (l *raftLog) maybeAppend(index, logTerm, committed uint64, ents ...pb.Entry) (lastnewi uint64, ok bool) {
 	// 通过 index 和 logTerm 检查此条消息的有效性
 	if l.matchTerm(index, logTerm) {
+		// todo 这里要求找到验证该 Index 后,才会进入 append 操作. 这说明在追加日志的时候,第一条日志总是会包含至少一条已经存在的日志
 		lastnewi = index + uint64(len(ents))
 		ci := l.findConflict(ents)
 		switch {
 		case ci == 0:
+			// 表示 raftLog 中已经包含了所有待追加的 Entry 记录,不必进行任何追加操作
 		case ci <= l.committed:
+			// 发生的冲突是已经提交的记录,则输出日志并终止程序
+			// TODO: 如果传入的 entry 的 index 在 Storage 的快照中, 也会走到这里.
 			l.logger.Panicf("entry %d conflict with committed entry [committed(%d)]", ci, l.committed)
 		default:
+			// 冲突位置是未提交的部分. 则将 ents 中未发生冲突的部分追加到 raftLog 中
 			offset := index + 1
 			l.append(ents[ci-offset:]...)
 		}
@@ -136,6 +142,13 @@ func (l *raftLog) append(ents ...pb.Entry) uint64 {
 // The first entry MUST have an index equal to the argument 'from'.
 // The index of the given entries MUST be continuously increasing.
 //
+
+// 找到传入 entries 与已存在的 entries 第一处存在冲突的地方.
+// 如果没有找到冲突,且:
+// 		已有的 entries 包含所有传入的 entries, 返回 0;
+//      传入的 entries 包含新的 entries, 返回第一个新的 entry 的索引;
+// 		如果相同 index 的 entry 有不同的 term, 则认为产生了冲突;
+//
 func (l *raftLog) findConflict(ents []pb.Entry) uint64 {
 	for _, ne := range ents {
 		if !l.matchTerm(ne.Index, ne.Term) {
@@ -160,8 +173,10 @@ func (l *raftLog) unstableEntries() []pb.Entry {
 // If applied is smaller than the index of snapshot, it returns all committed
 // entries after the index of snapshot.
 func (l *raftLog) nextEnts() (ents []pb.Entry) {
+	// 获取当前已被应用的位置
 	off := max(l.applied+1, l.firstIndex())
 	if l.committed+1 > off {
+		// 获取所有已提交但未应用的 entries 返回
 		ents, err := l.slice(off, l.committed+1, l.maxNextEntsSize)
 		if err != nil {
 			l.logger.Panicf("unexpected error when getting unapplied entries (%v)", err)
@@ -241,10 +256,10 @@ func (l *raftLog) lastTerm() uint64 {
 
 func (l *raftLog) term(i uint64) (uint64, error) {
 	// the valid term range is [index of dummy entry, last index]
-	//  dummy entry ： 如果有快照，就表示快照的最后一个 entry 的索引， 如果没有快照，就是 0
+	// 从 unstable 和 Storage 中依次查找, 如果有快照，就表示快照的最后一个 entry 的索引， 如果没有快照，就是 1
 	dummyIndex := l.firstIndex() - 1
 	if i < dummyIndex || i > l.lastIndex() {
-		// TODO: return an error instead?
+		// TODO: 为什么不返回错误?
 		return 0, nil
 	}
 
@@ -264,6 +279,7 @@ func (l *raftLog) term(i uint64) (uint64, error) {
 	panic(err) // TODO(bdarnell)
 }
 
+// 获取指定索引及之后的所有日, Leader 在向 Follower 发送日志时,需要根据 Follower 的 nextIndex 和 matchIndex 的情况决定要发送的日志
 func (l *raftLog) entries(i, maxsize uint64) ([]pb.Entry, error) {
 	if i > l.lastIndex() {
 		return nil, nil
@@ -290,7 +306,12 @@ func (l *raftLog) allEntries() []pb.Entry {
 // later term is more up-to-date. If the logs end with the same term, then
 // whichever log has the larger lastIndex is more up-to-date. If the logs are
 // the same, the given log is up-to-date.
+
+// Follower 节点在接收到 Candidate 节点的选举请求之后,使用此函数比较 Candidate 节点日志与自己日志的新旧,从而决定是否投票
+// lasti 和 term 分别是 Candidate 节点的最大记录索引位和最大任期号(即 MsgVote 请求 ( Candidate 发送的选举请求)携带的 Index 和 LogTerm)
+
 func (l *raftLog) isUpToDate(lasti, term uint64) bool {
+	// 先比较任期号,再比较索引值
 	return term > l.lastTerm() || (term == l.lastTerm() && lasti >= l.lastIndex())
 }
 

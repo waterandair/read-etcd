@@ -41,7 +41,7 @@ type unstable struct {
 
 // maybeFirstIndex returns the index of the first possible entry in entries
 // if it has a snapshot.
-// 如果有快照,才会返回第一个索引值
+// 如果有快照,才会返回第一个索引值, 否则返回 0.
 func (u *unstable) maybeFirstIndex() (uint64, bool) {
 	if u.snapshot != nil {
 		return u.snapshot.Metadata.Index + 1, true
