@@ -119,9 +119,9 @@ type ProgressTracker struct {
 
 	Progress ProgressMap
 
-	Votes map[uint64]bool  // 在选举过程,如果当前节点收到了来自某个节点的投票, 则会将 votes 中对应的值设置为 true ,通过统计 votes 这个 map , 就可以确定当前节点收到的投票是否超过半数 。
+	Votes map[uint64]bool // 在选举过程,如果当前节点收到了来自某个节点的投票, 则会将 votes 中对应的值设置为 true ,通过统计 votes 这个 map , 就可以确定当前节点收到的投票是否超过半数 。
 
-	MaxInflight int  // 表示发送出去但是未收到响应的消息个数上限,如果处于该状态的消息超过这个阈值,就会暂停当前节点的消息发送.避免引起网络阻塞.
+	MaxInflight int // 表示发送出去但是未收到响应的消息个数上限,如果处于该状态的消息超过这个阈值,就会暂停当前节点的消息发送.避免引起网络阻塞.
 }
 
 // MakeProgressTracker initializes a ProgressTracker.
@@ -254,10 +254,10 @@ func (p *ProgressTracker) ResetVotes() {
 
 // RecordVote records that the node with the given id voted for this Raft
 // instance if v == true (and declined it otherwise).
-func (p *ProgressTracker) RecordVote(id uint64, v bool) {
-	_, ok := p.Votes[id]
+func (p *ProgressTracker) RecordVote(fromID uint64, v bool) {
+	_, ok := p.Votes[fromID]
 	if !ok {
-		p.Votes[id] = v
+		p.Votes[fromID] = v
 	}
 }
 

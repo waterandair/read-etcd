@@ -37,10 +37,10 @@ message Snapshot {
 }
 
 enum MessageType {
-	MsgHup             = 0;  // 属于本地消息
+	MsgHup             = 0;  // 属于本地消息， 发起选举
 	MsgBeat            = 1;  //
 	MsgProp            = 2;  // 属于本地消息
-	MsgApp             = 3;
+	MsgApp             = 3;  // 新任 leader 节点告知其他节点自己是新的 leader
 	MsgAppResp         = 4;
 	MsgVote            = 5;
 	MsgVoteResp        = 6;
@@ -54,8 +54,8 @@ enum MessageType {
 	MsgTimeoutNow      = 14;
 	MsgReadIndex       = 15;  // 属于本地消息
 	MsgReadIndexResp   = 16;
-	MsgPreVote         = 17;
-	MsgPreVoteResp     = 18;
+	MsgPreVote         = 17;  // 如果开启了 preVote， 处理 MsgHup 消息时， 会发送 MsgPreVote 消息
+	MsgPreVoteResp     = 18;  // PreCandidate 状态的节点会向发送向其他节点发送 MsgPreVote 消息， 其他节点向 PreCandidate 节点返回 MsgPreVoteResp 类型的消息， 在 PreCandidate 节点上会对 MsgPreVoteResp 类型的消息进行处理
 }
 
 //  Message 所有消息的抽象

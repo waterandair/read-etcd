@@ -856,13 +856,15 @@ func (r *raft) campaign(t CampaignType) {
 	}
 }
 
-func (r *raft) poll(id uint64, t pb.MessageType, v bool) (granted int, rejected int, result quorum.VoteResult) {
+// 计算选举结果
+func (r *raft) poll(fromID uint64, t pb.MessageType, v bool) (granted int, rejected int, result quorum.VoteResult) {
+	// v 是否是拒绝
 	if v {
-		r.logger.Infof("%x received %s from %x at term %d", r.id, t, id, r.Term)
+		r.logger.Infof("%x received %s from %x at term %d", r.id, t, fromID, r.Term)
 	} else {
-		r.logger.Infof("%x received %s rejection from %x at term %d", r.id, t, id, r.Term)
+		r.logger.Infof("%x received %s rejection from %x at term %d", r.id, t, fromID, r.Term)
 	}
-	r.prs.RecordVote(id, v)
+	r.prs.RecordVote(fromID, v)
 	return r.prs.TallyVotes()
 }
 
@@ -873,10 +875,14 @@ func (r *raft) Step(m pb.Message) error {
 	case m.Term == 0:
 		// local message 本地消息
 	case m.Term > r.Term:
+		// 在发起选举的时候, 其他节点收到选举请求的时候会走到这个， m.Term 一般会比 r.Term 大 1
 		if m.Type == pb.MsgVote || m.Type == pb.MsgPreVote {
+			// 根据消息的 Context 判断消息类型是否是 Leader 节点转移场景下产生的，如果是，则强制当前节点参与本次选举或预选
 			force := bytes.Equal(m.Context, []byte(campaignTransfer))
+			// 释放： 满足这一系列条件，此节点就参与选举
 			inLease := r.checkQuorum && r.lead != None && r.electionElapsed < r.electionTimeout
 			if !force && inLease {
+				// 当前节点不参与此次选举
 				// If a server receives a RequestVote request within the minimum election timeout
 				// of hearing from a current leader, it does not update its term or grant its vote
 				r.logger.Infof("%x [logterm: %d, index: %d, vote: %x] ignored %s from %x [logterm: %d, index: %d] at term %d: lease is not expired (remaining ticks: %d)",
@@ -972,12 +978,18 @@ func (r *raft) Step(m pb.Message) error {
 			r.logger.Debugf("%x ignoring MsgHup because already leader", r.id)
 		}
 
-	case pb.MsgVote, pb.MsgPreVote:
-		// We can vote if this is a repeat of a vote we've already cast...
+	case pb.MsgVote, pb.MsgPreVote: // 本地消息 MsgHup 经过处理，最终会向其他节点发送 MsgVote 或 MsgPreVote 消息
+		// 当前节点在参与选举或预选时，会综合下面几个条件决定是否投票（这些在 raft 协议中可以找到对应的描述）：
+		// 1. 当前节点是否已经投过票
+		// 2. MsgPreVote 消息发送者的任期号是否更大
+		// 3. 当前节点投票给了对方节点
+		// 4. MsgPreVote 消息的发送者的 raftLog 中是否包含当前节点的全部 Entry 记录 （isUpToDate ）
+
+		// We can vote if this is a repeat of a vote we've already cast... 可以重复投票
 		canVote := r.Vote == m.From ||
-		// ...we haven't voted and we don't think there's a leader yet in this term...
+			// ...we haven't voted and we don't think there's a leader yet in this term...
 			(r.Vote == None && r.lead == None) ||
-		// ...or this is a PreVote for a future term...
+			// ...or this is a PreVote for a future term...
 			(m.Type == pb.MsgPreVote && m.Term > r.Term)
 		// ...and we believe the candidate is up to date.
 		if canVote && r.raftLog.isUpToDate(m.Index, m.LogTerm) {
@@ -1010,6 +1022,7 @@ func (r *raft) Step(m pb.Message) error {
 			// the message (it ignores all out of date messages).
 			// The term in the original message and current local term are the
 			// same in the case of regular votes, but different for pre-votes.
+			// 返回成功票
 			r.send(pb.Message{To: m.From, Term: m.Term, Type: voteRespMsgType(m.Type)})
 			if m.Type == pb.MsgVote {
 				// Only record real votes.
@@ -1019,10 +1032,11 @@ func (r *raft) Step(m pb.Message) error {
 		} else {
 			r.logger.Infof("%x [logterm: %d, index: %d, vote: %x] rejected %s from %x [logterm: %d, index: %d] at term %d",
 				r.id, r.raftLog.lastTerm(), r.raftLog.lastIndex(), r.Vote, m.Type, m.From, m.LogTerm, m.Index, r.Term)
+			// 返回拒绝票
 			r.send(pb.Message{To: m.From, Term: r.Term, Type: voteRespMsgType(m.Type), Reject: true})
 		}
 
-	default:
+	default: // 其他类型的消息就交给当前节点的 step 处理函数处理
 		err := r.step(r, m)
 		if err != nil {
 			return err
@@ -1146,7 +1160,7 @@ func stepLeader(r *raft, m pb.Message) error {
 					r.send(pb.Message{To: m.From, Type: pb.MsgReadIndexResp, Index: ri, Entries: m.Entries})
 				}
 			}
-		} else { // only one voting member (the leader) in the cluster
+		} else {                                  // only one voting member (the leader) in the cluster
 			if m.From == None || m.From == r.id { // from leader itself
 				r.readStates = append(r.readStates, ReadState{Index: r.raftLog.committed, RequestCtx: m.Entries[0].Data})
 			} else { // from learner member
@@ -1321,7 +1335,7 @@ func stepCandidate(r *raft, m pb.Message) error {
 	// StateCandidate, we may get stale MsgPreVoteResp messages in this term from
 	// our pre-candidate state).
 	var myVoteRespType pb.MessageType
-	if r.state == StatePreCandidate {
+	if r.state == StatePreCandidate { // 根据当前节点的状态决定其能够处理的选举响应消息的类型
 		myVoteRespType = pb.MsgPreVoteResp
 	} else {
 		myVoteRespType = pb.MsgVoteResp
@@ -1340,17 +1354,17 @@ func stepCandidate(r *raft, m pb.Message) error {
 		r.becomeFollower(m.Term, m.From) // always m.Term == r.Term
 		r.handleSnapshot(m)
 	case myVoteRespType:
-		gr, rj, res := r.poll(m.From, m.Type, !m.Reject)
+		gr, rj, res := r.poll(m.From, m.Type, !m.Reject) // 统计投票结果
 		r.logger.Infof("%x has received %d %s votes and %d vote rejections", r.id, gr, m.Type, rj)
 		switch res {
-		case quorum.VoteWon:
+		case quorum.VoteWon: // 竞选成功
 			if r.state == StatePreCandidate {
-				r.campaign(campaignElection)
+				r.campaign(campaignElection) // preVote 通过，发起正式选举请求
 			} else {
-				r.becomeLeader()
-				r.bcastAppend()
+				r.becomeLeader() // 选举通过，成为新的 Leader
+				r.bcastAppend()  // TODO 向其他节点广播 MsgApp 消息， 昭告天下自己成为新的 leader
 			}
-		case quorum.VoteLost:
+		case quorum.VoteLost: // 竞选失败
 			// pb.MsgPreVoteResp contains future term of pre-candidate
 			// m.Term > r.Term; reuse r.Term
 			r.becomeFollower(r.Term, None)

@@ -30,7 +30,7 @@ const (
 	// StateSnapshot indicates a follower that needs log entries not available
 	// from the leader's Raft log. Such a follower needs a full snapshot to
 	// return to StateReplicate.
-	StateSnapshot
+	StateSnapshot  //
 )
 
 var prstmap = [...]string{
