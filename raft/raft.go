@@ -1054,6 +1054,7 @@ type stepFunc func(r *raft, m pb.Message) error
 
 func stepLeader(r *raft, m pb.Message) error {
 	// These message types do not require any progress for m.From.
+	// 此类消息无须处理消息的 From 字段和消息发送者对应的 Process 实例可以直接进行处理
 	switch m.Type {
 	case pb.MsgBeat:
 		r.bcastHeartbeat()
@@ -1178,31 +1179,39 @@ func stepLeader(r *raft, m pb.Message) error {
 
 	// All other message types require a progress for m.From (pr).
 	pr := r.prs.Progress[m.From]
-	if pr == nil {
+	if pr == nil {  // 对应的 Process 实例可能已经从集群中删除
 		r.logger.Debugf("%x no progress available for %x", r.id, m.From)
 		return nil
 	}
 	switch m.Type {
 	case pb.MsgAppResp:
-		pr.RecentActive = true
+		pr.RecentActive = true  // Leader 节点接收到 MsgAppResp 消息，表示发送方在正常运行
 
-		if m.Reject {
+		if m.Reject {  // MsgApp 请求被拒绝， 根据 MsgAppResp 携带的 Index 信心，重新设置 Leader 节点上对应的该发送发的 nextIndex 值
 			r.logger.Debugf("%x received MsgAppResp(MsgApp was rejected, lastindex: %d) from %x for index %d",
 				r.id, m.RejectHint, m.From, m.Index)
 			if pr.MaybeDecrTo(m.Index, m.RejectHint) {
 				r.logger.Debugf("%x decreased progress of %x to [%s]", r.id, m.From, pr)
 				if pr.State == tracker.StateReplicate {
+					// MsgApp 消息被拒后，会将发送方节点的状态设置为 StateProbe， 表示 Leader 节点一次只能向该节点发送一条消息，等收到响应后才能发送下一条
+					// 试探 Follower 节点的匹配位置
 					pr.BecomeProbe()
 				}
+				// 再次向对应的 Follower 节点发送 MsgApp 消息，在 sendAppend() 方法中，会将对应的 Process.pause 字段设置为 true， 从而暂停后续消息的发送，实现向 Follower 节点发送试探性消息的效果
 				r.sendAppend(m.From)
 			}
-		} else {
+		} else {  // 表示之前发送的 MsgApp 消息被对应的 Follower 节点接收成功
 			oldPaused := pr.IsPaused()
+			// m.Index 对应的是 Follower 节点本地日志 raftLog 中最后一条 Entry 记录的索引，这里会根据改值更新
+			// 其在 Leader 节点对应的 Process 实例的 Next 和 Match 值
 			if pr.MaybeUpdate(m.Index) {
 				switch {
 				case pr.State == tracker.StateProbe:
+					// 一旦 MsgApp 被 Follower 节点接收，则表示已经找到其正确的 Next 和 Match， 不必再进行试探，可以将对应的 Process.state 更新为 StateReplicate
 					pr.BecomeReplicate()
 				case pr.State == tracker.StateSnapshot && pr.Match >= pr.PendingSnapshot:
+					// 之前由于某些原因，Leader 节点通过发送快照的方式恢复 Follower 节点，但在发送 MsgSnap 消息的过程中，Follower 节点恢复并正常接受了 Leader 的 MsgApp 消息
+					// 此时会丢弃 MsgSnap 消息，并开始尝试试探该 Follower 节点正确的 Match 和 Next 值
 					// TODO(tbg): we should also enter this branch if a snapshot is
 					// received that is below pr.PendingSnapshot but which makes it
 					// possible to use the log again.
@@ -1212,15 +1221,23 @@ func stepLeader(r *raft, m pb.Message) error {
 					// move to replicating state, that would only happen with
 					// the next round of appends (but there may not be a next
 					// round for a while, exposing an inconsistent RaftStatus).
+					// TODO question: 为什么这里先 BecomeProbe() 又 BecomeReplicate()
 					pr.BecomeProbe()
 					pr.BecomeReplicate()
 				case pr.State == tracker.StateReplicate:
+					// 之前向某个 Follower 节点发送 MsgApp 消息时，会将其相关信息保存到对应的 Progress.Inflights 中， 这里收到成功的 MsgAppResp 响应后，
+					// 会将其对应的索引中 Inflights 中删除，这样就实现了限流的效果，避免网络出现延迟时，继续发送消息，从而导致网络拥堵
 					pr.Inflights.FreeLE(m.Index)
 				}
 
+				// 收到一个 MsgAppResp 后，还会尝试更新本地日志的已提交索引 raft.committed.
+				// 因为有些 Entry 记录可能已经被保存到了半数以上的节点中
 				if r.maybeCommit() {
+					// 向所有节点广播 MsgApp 消息， 此时 Commit 字段与上一次 MsgApp 消息已经不同
 					r.bcastAppend()
 				} else if oldPaused {
+					// 如果之前 Leader 节点暂停向该 Follower 节点发送消息，收到 MsgAppResp 消息后，
+					// 在上述代码中已经重置了相应的状态，所以可以继续发送 MsgApp 消息
 					// If we were paused before, this node may be missing the
 					// latest commit index, so send it.
 					r.sendAppend(m.From)

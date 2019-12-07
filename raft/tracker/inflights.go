@@ -19,9 +19,10 @@ package tracker
 // use Full() to check whether more messages can be sent, call Add() whenever
 // they are sending a new append, and release "quota" via FreeLE() whenever an
 // ack is received.
+// 记录已发送但未收到响应的 MsgApp 消息
 type Inflights struct {
 	// the starting index in the buffer
-	start int
+	start int  // inflights
 	// number of inflights in the buffer
 	count int
 
@@ -30,7 +31,7 @@ type Inflights struct {
 
 	// buffer contains the index of the last entry
 	// inside one message.
-	buffer []uint64
+	buffer []uint64  // 用来记录 MsgApp 消息相关信息的数组，其中记录的是 MsgApp 消息中最后一条 Entry 记录的索引值
 }
 
 // NewInflights sets up an Inflights that allows up to 'size' inflight messages.

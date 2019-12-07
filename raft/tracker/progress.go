@@ -174,28 +174,36 @@ func (pr *Progress) OptimisticUpdate(n uint64) { pr.Next = n + 1 }
 //
 // If the rejection is genuine, Next is lowered sensibly, and the Progress is
 // cleared for sending log entries.
+// 根据 Process 的状态和 MsgAppResp 消息携带的提示信息，完成 Process.Next 的更新
+// rejected 表示被拒绝的 MsgAppResp 消息中的 Index 值
+// last 表示被拒绝的 MsgAppResp 消息的 RejectHint 值（对应 Follower 节点 raftLog 中最后一条 Entry 记录的索引）
 func (pr *Progress) MaybeDecrTo(rejected, last uint64) bool {
 	if pr.State == StateReplicate {
 		// The rejection must be stale if the progress has matched and "rejected"
 		// is smaller than "match".
+		// 出现过时的 MsgAppResp 消息，直接忽略
 		if rejected <= pr.Match {
 			return false
 		}
 		// Directly decrease next to match + 1.
 		//
 		// TODO(tbg): why not use last if it's larger?
+		// 当处于 StateReplicate 状态时，发送 MsgApp 消息的同时会乐观的调用 Process.optimisticUpdate() 方法增加 Next，这就
+		// 使得 Next 可能会比 Match 大很多，这里回退 Next 至 Match 位置，并在后面重新发送 MsgApp 消息进行尝试
 		pr.Next = pr.Match + 1
 		return true
 	}
 
 	// The rejection must be stale if "rejected" does not match next - 1. This
 	// is because non-replicating followers are probed one entry at a time.
-	if pr.Next-1 != rejected {
+	// todo question
+	if pr.Next-1 != rejected {  // 出现过时的 MsgAppResp 消息，直接忽略
 		return false
 	}
 
+	// 根据 MsgAppResp 携带的信息重置 Next
 	if pr.Next = min(rejected, last+1); pr.Next < 1 {
-		pr.Next = 1
+		pr.Next = 1  // 将 Next 重置为 1
 	}
 	pr.ProbeSent = false
 	return true
