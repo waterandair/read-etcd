@@ -209,11 +209,11 @@ func (pr *Progress) MaybeDecrTo(rejected, last uint64) bool {
 // log entries again.
 func (pr *Progress) IsPaused() bool {
 	switch pr.State {
-	case StateProbe:
+	case StateProbe:  // 检测 ProbeSent 字段
 		return pr.ProbeSent
-	case StateReplicate:
+	case StateReplicate:  // 检测已发送但未响应的消息个数
 		return pr.Inflights.Full()
-	case StateSnapshot:
+	case StateSnapshot:  // 始终可以发送消息
 		return true
 	default:
 		panic("unexpected state")

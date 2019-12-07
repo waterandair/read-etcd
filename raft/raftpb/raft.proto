@@ -44,7 +44,7 @@ enum MessageType {
 	MsgAppResp         = 4;
 	MsgVote            = 5;
 	MsgVoteResp        = 6;
-	MsgSnap            = 7;
+	MsgSnap            = 7;  // 快照消息；leader 节点向目标节点发送消息时，如果根据 Next 值查找 term 或 entries 失败， 就发送快照消息
 	MsgHeartbeat       = 8;
 	MsgHeartbeatResp   = 9;
 	MsgUnreachable     = 10;

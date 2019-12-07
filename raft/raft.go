@@ -461,18 +461,20 @@ func (r *raft) sendAppend(to uint64) {
 // are undesirable when we're sending multiple messages in a batch).
 func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 	pr := r.prs.Progress[to]
-	if pr.IsPaused() {
+	if pr.IsPaused() {  // 检测当前节点是否可以向目标节点发送消息
 		return false
 	}
-	m := pb.Message{}
-	m.To = to
+	m := pb.Message{} // 创建待发送的消息
+	m.To = to  // 设置目标节点的 ID
 
+	// 当前 Leader 节点根据每个目标节点的 Next 索引， 发送指定的 entries 记录
 	term, errt := r.raftLog.term(pr.Next - 1)
 	ents, erre := r.raftLog.entries(pr.Next, r.maxMsgSize)
 	if len(ents) == 0 && !sendIfEmpty {
 		return false
 	}
 
+	// 如果查找目标节点对应的 term 或 entries 失败， 就发送快照消息 MsgSnap
 	if errt != nil || erre != nil { // send snapshot if we failed to get term or entries
 		if !pr.RecentActive {
 			r.logger.Debugf("ignore sending snapshot to %x since it is not recently active", to)
@@ -499,24 +501,27 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 		r.logger.Debugf("%x paused sending replication messages to %x [%s]", r.id, to, pr)
 	} else {
 		m.Type = pb.MsgApp
-		m.Index = pr.Next - 1
+		m.Index = pr.Next - 1  // 表示其携带的 entries 中前一条记录的索引值
 		m.LogTerm = term
 		m.Entries = ents
-		m.Commit = r.raftLog.committed
+		m.Commit = r.raftLog.committed  // 消息发送节点的提交位置，当前节点最后一条已提交的记录索引值
 		if n := len(m.Entries); n != 0 {
+			// 根据目标节点对应的 Progress.State 状态决定其发送消息后的行为
 			switch pr.State {
 			// optimistically increase the next when in StateReplicate
 			case tracker.StateReplicate:
 				last := m.Entries[n-1].Index
-				pr.OptimisticUpdate(last)
-				pr.Inflights.Add(last)
+				pr.OptimisticUpdate(last)  // 更新目标节点的 Next 值， 这里不会更新 Match
+				pr.Inflights.Add(last)  // 记录已发送但是未收到响应的消息
 			case tracker.StateProbe:
-				pr.ProbeSent = true
+				pr.ProbeSent = true  // 消息发送后，就将 ProbeSent 设置为 true， 暂停后续消息的发送
 			default:
 				r.logger.Panicf("%x is sending append in unhandled state %s", r.id, pr.State)
 			}
 		}
 	}
+
+	// 将消息添加到 raft.msgs 中等待发送
 	r.send(m)
 	return true
 }
@@ -1388,9 +1393,9 @@ func stepFollower(r *raft, m pb.Message) error {
 		m.To = r.lead
 		r.send(m)
 	case pb.MsgApp:
-		r.electionElapsed = 0
-		r.lead = m.From
-		r.handleAppendEntries(m)
+		r.electionElapsed = 0  // 重置选举计算器，防止当前 Follower 发起新一轮的选举
+		r.lead = m.From  // 保存当前集群中的 Leader 节点 ID
+		r.handleAppendEntries(m) // 将 MsgApp 消息中携带的 Entry 记录追加到 raftLog 中，并且向 Leader 节点 响应 MsgAppResp 消息
 	case pb.MsgHeartbeat:
 		r.electionElapsed = 0
 		r.lead = m.From
@@ -1434,14 +1439,20 @@ func stepFollower(r *raft, m pb.Message) error {
 }
 
 func (r *raft) handleAppendEntries(m pb.Message) {
+	// m.Index 表示 leader 发送给 follower 的上一条日志的索引位置
+	// 如果 Follower 节点在 m.Index 位置的 Entry 记录已经提交过了，则不能进行追加操作，已提交的记录不能被覆盖，
+	// 所以 Follower 节点会将其 committed 位置通过 MsgAppResp 消息的 Index 字段通知 Leader 节点， 即告知 leader 节点正确的 NextIndex 值
 	if m.Index < r.raftLog.committed {
 		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: r.raftLog.committed})
 		return
 	}
 
+	// 尝试将消息携带的 Entry 记录追加到 raftLog 中
 	if mlastIndex, ok := r.raftLog.maybeAppend(m.Index, m.LogTerm, m.Commit, m.Entries...); ok {
+		// 如果追加成功，则将最后一条记录的索引值通过 MsgAppResp 消息返回给 Leader 节点，这样 Leader 节点就可以根据此值更新其对应的 Next 和 Match 值
 		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: mlastIndex})
 	} else {
+		// 如果追加记录失败，则将失败信息返回给 Leader 节点，将 reject 字段设置为 true， 并把当前节点的 raftLog 中的最后一条记录的索引存入 RejectHint
 		r.logger.Debugf("%x [logterm: %d, index: %d] rejected MsgApp [logterm: %d, index: %d] from %x",
 			r.id, r.raftLog.zeroTermOnErrCompacted(r.raftLog.term(m.Index)), m.Index, m.LogTerm, m.Index, m.From)
 		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: m.Index, Reject: true, RejectHint: r.raftLog.lastIndex()})
