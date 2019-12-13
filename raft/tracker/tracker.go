@@ -217,6 +217,9 @@ func (p *ProgressTracker) QuorumActive() bool {
 		if pr.IsLearner {
 			return
 		}
+
+		// 通过 RecentActive 可以判断对应 Follower 节点的连通性
+		// 在处理 MsgAppResp 消息的过程中，当 Leader 成功收到了 Follower 的响应消息，就会将该 Follower 对应的 RecentActive 设为 true
 		votes[id] = pr.RecentActive
 	})
 

@@ -10,14 +10,14 @@ Follower 节点会收到此类消息：
 ##### MsgPreVoteResp 发起预选举投票的响应消息
 PreCandidate 节点会收到此类消息：
 当 PreCandidate 节点收到半数以上的投票时，会将自己的状态切换为 Candidate 并发起正式的选举
-##### MsgVote 发起选举投票请求消息
+##### MsgVote 发起选举投票请求消息  
 Follower 节点会收到此类消息：  
 检测当前节点是和否投票及发送过了 MsgVoteResp 消息，重置当前节点的选举超时计时器，并更新 raft.Vote 字段。
 ##### MsgVoteResp 选举投票响应消息
 Candidate 节点会收到此类消息：  
 首先检测当前节点是否通过了选举，即是否收到了半数以上的选票，如果是，则将当前节点切换成 Leader 状态，之后像集群中其他节点发送消息。
 
-##### MsgApp 日志复制的请求消息
+##### MsgApp 日志复制请求消息
 Follower 节点收到此类消息：
 1. 重置选举超时计算器，防止发起新一轮选举
 2. 记录当前集群的 leader 节点 ID
@@ -32,4 +32,10 @@ Candidate 节点收到此类消息：
 ##### MsgAppResp 日志复制的响应消息
 todo
 
-##### 
+##### MsgBeat 心跳消息和 MsgCheckQuorum 探活消息
+这两种消息的 Term 值都为 0， 都属于本地消息。  
+
+Leader 节点除了向集群中其他 Follower 发送 MsgApp 消息，还会向这些 Follower 节点发送 MsgBeat 消息。MsgBeat 消息的主要作用的心跳探活，
+当 follower 节点收到此消息，就会重置自己的选举超时器（election_timeout），防止 Follower 节点发起选举.  
+  
+
