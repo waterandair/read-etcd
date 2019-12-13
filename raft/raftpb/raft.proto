@@ -39,14 +39,14 @@ message Snapshot {
 enum MessageType {
 	MsgHup             = 0;  // 属于本地消息， 发起选举
 	MsgBeat            = 1;  // 属于Leader节点的本地消息，Leader 收到此消息后，会向 Follower 节点广播 MsgHeartbeat 消息
-	MsgProp            = 2;  // 属于本地消息
-	MsgApp             = 3;  // 新任 leader 节点告知其他节点自己是新的 leader
-	MsgAppResp         = 4;
-	MsgVote            = 5;
-	MsgVoteResp        = 6;
+	MsgProp            = 2;  // 属于 Leader 本地消息，客户端给集群发送写请求就是通过此消息表示的，只有 Leader 节点能响应此消息
+	MsgApp             = 3;  // 日志复制请求消息/新任 leader 节点告知其他节点自己是新的 leader
+	MsgAppResp         = 4;  // 日志复制响应消息
+	MsgVote            = 5;  // 拉票消息
+	MsgVoteResp        = 6;  // 投票消息
 	MsgSnap            = 7;   // 快照消息；leader 节点向目标节点发送消息时，如果根据 Next 值查找 term 或 entries 失败， 就发送快照消息
-	MsgHeartbeat       = 8;
-	MsgHeartbeatResp   = 9;   // Leader 节点向 Follower 发送的心跳探活消息
+	MsgHeartbeat       = 8;   // Leader 节点向 Follower 发送的心跳探活消息
+	MsgHeartbeatResp   = 9;   // 心跳响应
 	MsgUnreachable     = 10;
 	MsgSnapStatus      = 11;
 	MsgCheckQuorum     = 12;  // 本地消息，检测当前节点是否与发部分节点连通

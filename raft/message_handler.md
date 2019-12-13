@@ -42,5 +42,9 @@ Leader 节点除了向集群中其他 Follower 发送 MsgApp 消息，还会向�
 
 ##### MsgHeartbeat 和 MsgHeartbeatResp 消息
 
+
+##### MsgProp 客户端写请求的消息
+只有 Leader 节点可以真正的处理此类消息， Candidate 节点会直接忽略掉此类消息，Follower 会将此类消息转发给当前集群中的 Leader
+
   
 

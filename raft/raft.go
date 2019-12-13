@@ -1092,17 +1092,22 @@ func stepLeader(r *raft, m pb.Message) error {
 		if len(m.Entries) == 0 {
 			r.logger.Panicf("%x stepped empty MsgProp", r.id)
 		}
+
+		// 检测当前节点是否被移除集群， 若被移除，则并不对消息进行处理
 		if r.prs.Progress[r.id] == nil {
 			// If we are not currently a member of the range (i.e. this node
 			// was removed from the configuration while serving as leader),
 			// drop any new proposals.
 			return ErrProposalDropped
 		}
+
+		// 检测当前是否正在进行 Leader 转移，若在进行则不处理消息
 		if r.leadTransferee != None {
 			r.logger.Debugf("%x [term %d] transfer leadership to %x is in progress; dropping proposal", r.id, r.Term, r.leadTransferee)
 			return ErrProposalDropped
 		}
 
+		// 遍历写请求消息中携带的全部 Entry 记录
 		for i := range m.Entries {
 			e := &m.Entries[i]
 			var cc pb.ConfChangeI
@@ -1265,8 +1270,8 @@ func stepLeader(r *raft, m pb.Message) error {
 			}
 		}
 	case pb.MsgHeartbeatResp:
-		pr.RecentActive = true  // 更新消息来源 Follower 节点对应的 RecentActive 值， 表示该 Follower 节点与 Leader 节点正常连通
-		pr.ProbeSent = false  //
+		pr.RecentActive = true // 更新消息来源 Follower 节点对应的 RecentActive 值， 表示该 Follower 节点与 Leader 节点正常连通
+		pr.ProbeSent = false   //
 
 		// free one slot for the full inflights window to allow progress.
 		if pr.State == tracker.StateReplicate && pr.Inflights.Full() {
