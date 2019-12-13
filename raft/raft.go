@@ -1265,15 +1265,18 @@ func stepLeader(r *raft, m pb.Message) error {
 			}
 		}
 	case pb.MsgHeartbeatResp:
-		pr.RecentActive = true
-		pr.ProbeSent = false
+		pr.RecentActive = true  // 更新消息来源 Follower 节点对应的 RecentActive 值， 表示该 Follower 节点与 Leader 节点正常连通
+		pr.ProbeSent = false  //
 
 		// free one slot for the full inflights window to allow progress.
 		if pr.State == tracker.StateReplicate && pr.Inflights.Full() {
+			// 释放第一个消息，这样就可以开始后续消息的发送
 			pr.Inflights.FreeFirstOne()
 		}
+
+		// 当 Leader 节点收到 Follower 节点的 MsgHeartbeat 消息之后，会比较对应的 Match 值与 Leader 节点的日志最后一条索引，
 		if pr.Match < r.raftLog.lastIndex() {
-			r.sendAppend(m.From)
+			r.sendAppend(m.From) // 向指定节点发送 MsgApp 消息，完成 Entry 复制
 		}
 
 		if r.readOnly.option != ReadOnlySafe || len(m.Context) == 0 {
@@ -1421,8 +1424,9 @@ func stepFollower(r *raft, m pb.Message) error {
 		r.lead = m.From          // 保存当前集群中的 Leader 节点 ID
 		r.handleAppendEntries(m) // 将 MsgApp 消息中携带的 Entry 记录追加到 raftLog 中，并且向 Leader 节点 响应 MsgAppResp 消息
 	case pb.MsgHeartbeat:
-		r.electionElapsed = 0
-		r.lead = m.From
+		r.electionElapsed = 0 // 重置选举计时器，防止当前 Follower 发起新一轮的选举
+		r.lead = m.From       // 设置当前集群中的 Leader 节点
+		// 处理心跳请求消息
 		r.handleHeartbeat(m)
 	case pb.MsgSnap:
 		r.electionElapsed = 0
@@ -1484,7 +1488,9 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 }
 
 func (r *raft) handleHeartbeat(m pb.Message) {
+	// 修改本地日志的已提交位置
 	r.raftLog.commitTo(m.Commit)
+	// 向 Leader 节点发送 MsgHeartbeatResp 响应消息
 	r.send(pb.Message{To: m.From, Type: pb.MsgHeartbeatResp, Context: m.Context})
 }
 

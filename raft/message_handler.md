@@ -35,7 +35,12 @@ todo
 ##### MsgBeat 心跳消息和 MsgCheckQuorum 探活消息
 这两种消息的 Term 值都为 0， 都属于本地消息。  
 
-Leader 节点除了向集群中其他 Follower 发送 MsgApp 消息，还会向这些 Follower 节点发送 MsgBeat 消息。MsgBeat 消息的主要作用的心跳探活，
+Leader 节点除了向集群中其他 Follower 发送 MsgApp 消息，还会向这些 Follower 节点发送 MsgHeartbeat 消息。 Leader 会发送一个 MsgBeat 的本地消息，
+处理这个消息的过程就是向 Follower 节点广播 MsgHeartbeat ， 主要作用的心跳探活，
 当 follower 节点收到此消息，就会重置自己的选举超时器（election_timeout），防止 Follower 节点发起选举.  
+
+
+##### MsgHeartbeat 和 MsgHeartbeatResp 消息
+
   
 
