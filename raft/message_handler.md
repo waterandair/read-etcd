@@ -46,5 +46,17 @@ Leader 节点除了向集群中其他 Follower 发送 MsgApp 消息，还会向�
 ##### MsgProp 客户端写请求的消息
 只有 Leader 节点可以真正的处理此类消息， Candidate 节点会直接忽略掉此类消息，Follower 会将此类消息转发给当前集群中的 Leader
 
+##### MsgReadIndex， MsgReadIndexResp， 客户端读消息和响应
+客户端的读请求需要读到最新的已提交的数据，不能读到老数据。Leader 节点保存了整个集群中最新的数据，但在网络分区的场景下，旧的 Leader 节点就可能返回旧数据。  
+
+MsgReadIndex 类型的消息就是用来解决这个问题的：  
+当客户端只读请求发送到 Leader 节点后，Leader 会将请求中的编号记录下来，在返回数据给客户端之前，Leader 节点需要先确定自定是否依然是当前集群的 Leader 节点，  
+确定之后，就可以等待 Leader 节点的提交位置（raftLog.committed） 到达或者超过只读请求的编号即可向客户端返回响应。  
+
+只读请求有两种模式，分别是 ReadOnlySafe 和 ReadOnlyLeaseBased，ReadOnlySafe 模式是 etcd 作者推荐的模式，在这种模式下的只读请求处理
+，不会受节点之间时钟差异和网络分区的影响。  
+
+
+
   
 

@@ -260,7 +260,7 @@ type raft struct {
 	Vote uint64 // 当前任期中当前节点将选票投给了哪个节点, (即 raft 论文中的 votedFor)
 
 	readStates []ReadState // todo 只读请求
-	readOnly   *readOnly   // todo 只读请求
+	readOnly   *readOnly   // 进行批量处理只读请求
 
 	// the log
 	raftLog *raftLog // 本地 Log
@@ -1153,9 +1153,9 @@ func stepLeader(r *raft, m pb.Message) error {
 		r.bcastAppend()
 		return nil
 	case pb.MsgReadIndex:
-		// If more than the local vote is needed, go through a full broadcast,
-		// otherwise optimize.
-		if !r.prs.IsSingleton() {
+		// If more than the local vote is needed, go through a full broadcast, otherwise optimize.
+		if !r.prs.IsSingleton() { // 不是单节点，表示集群环境
+			// Leader 节点检测自身在当前任期中是否已提交过 Entry 记录， 如果没有，则无法进行读取操作
 			if r.raftLog.zeroTermOnErrCompacted(r.raftLog.term(r.raftLog.committed)) != r.Term {
 				// Reject read only request when this leader has not committed any log entry at its term.
 				return nil
@@ -1164,12 +1164,15 @@ func stepLeader(r *raft, m pb.Message) error {
 			// thinking: use an interally defined context instead of the user given context.
 			// We can express this in terms of the term and index instead of a user-supplied value.
 			// This would allow multiple reads to piggyback on the same message.
+			//
 			switch r.readOnly.option {
 			case ReadOnlySafe:
+				// ReadOnlySafe 是推荐的模式，只读请求不会受节点之间时钟差异和网络分区的影响
+				// 记录当前节点的 raftLog.committed（已提交的位置） 字段值, 和消息相关的信息
 				r.readOnly.addRequest(r.raftLog.committed, m)
 				// The local node automatically acks the request.
 				r.readOnly.recvAck(r.id, m.Entries[0].Data)
-				r.bcastHeartbeatWithCtx(m.Entries[0].Data)
+				r.bcastHeartbeatWithCtx(m.Entries[0].Data) // 向其他集群发送发送 MsgHeartbeat 心跳 消息。
 			case ReadOnlyLeaseBased:
 				ri := r.raftLog.committed
 				if m.From == None || m.From == r.id { // from local member
@@ -1178,7 +1181,7 @@ func stepLeader(r *raft, m pb.Message) error {
 					r.send(pb.Message{To: m.From, Type: pb.MsgReadIndexResp, Index: ri, Entries: m.Entries})
 				}
 			}
-		} else {                                  // only one voting member (the leader) in the cluster
+		} else {                                  // 单节点 only one voting member (the leader) in the cluster
 			if m.From == None || m.From == r.id { // from leader itself
 				r.readStates = append(r.readStates, ReadState{Index: r.raftLog.committed, RequestCtx: m.Entries[0].Data})
 			} else { // from learner member
@@ -1288,16 +1291,21 @@ func stepLeader(r *raft, m pb.Message) error {
 			return nil
 		}
 
+		// 统计响应 MsgHeartbeatResp 的节点个数， 少于半数不做处理
 		if r.prs.Voters.VoteResult(r.readOnly.recvAck(m.From, m.Context)) != quorum.VoteWon {
 			return nil
 		}
-
+		// 响应节点超过半数后，会清空 readOnly 中指定消息ID 及其之前的所有相关记录
 		rss := r.readOnly.advance(m)
 		for _, rs := range rss {
 			req := rs.req
+			// 根据消息的 From 字段，判断该 MsgReadIndex 消息是否为 Follower 节点转发到 Leader 节点的消息
 			if req.From == None || req.From == r.id { // from local member
+				// 将 MsgReadIndex 消息对应的已提交位置及其消息ID封装成 ReadState 实例，添加到 raft.readStates 中保存
+				// 后续会有其他 goroutine 读取该数组，并对响应的 MsgReadIndex 消息进行响应
 				r.readStates = append(r.readStates, ReadState{Index: rs.index, RequestCtx: req.Entries[0].Data})
 			} else {
+				// 如果是其他 Follower 节点转发到 Leader 节点的 MsgReadIndex 消息，则 Leader 节点会向 Follower 节点返回相应的 MsgReadIndexResp 消息，并由Follower 节点响应 Client
 				r.send(pb.Message{To: req.From, Type: pb.MsgReadIndexResp, Index: rs.index, Entries: req.Entries})
 			}
 		}
@@ -1455,6 +1463,7 @@ func stepFollower(r *raft, m pb.Message) error {
 			r.logger.Infof("%x received MsgTimeoutNow from %x but is not promotable", r.id, m.From)
 		}
 	case pb.MsgReadIndex:
+		// Follower 节点不能直接响应客户端的只读请求，需要转发给 leader 节点处理， 等待 Leader 节点响应后， 再由 Follower 节点响应 Client
 		if r.lead == None {
 			r.logger.Infof("%x no leader at term %d; dropping index reading msg", r.id, r.Term)
 			return nil
@@ -1466,6 +1475,7 @@ func stepFollower(r *raft, m pb.Message) error {
 			r.logger.Errorf("%x invalid format of MsgReadIndexResp from %x, entries count: %d", r.id, m.From, len(m.Entries))
 			return nil
 		}
+		// 将 MsgReadIndex 消息对应的消息 ID 以及已提交位置封装成 ReadState 实例并添加到 raft.readStates 中，等待其他 goroutine 处理
 		r.readStates = append(r.readStates, ReadState{Index: m.Index, RequestCtx: m.Entries[0].Data})
 	}
 	return nil
