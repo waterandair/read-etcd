@@ -57,6 +57,11 @@ MsgReadIndex 类型的消息就是用来解决这个问题的：
 ，不会受节点之间时钟差异和网络分区的影响。  
 
 
+##### MsgSnap 消息
+Leader 节点尝试向集群中的 Follower 节点发送 MsgApp 消息时，如果查找不到待发送的 Entry 记录（即该 Follower 节点对应的 Process.Next 指定的Entry记录），
+则会尝试通过 MsgSnap 消息将快照数据发送个到 Follower 节点，Follower 节点之后会通过快照数据恢复其自身状态，从而可以与 Leader 节点进行正常的 Entry 记录复制。  
 
-  
+当 Follower 节点宕机时间比较长时，就可能会出现发送 MsgSnap 消息的场景
+
+
 

@@ -467,7 +467,7 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 	m := pb.Message{} // 创建待发送的消息
 	m.To = to         // 设置目标节点的 ID
 
-	// 当前 Leader 节点根据每个目标节点的 Next 索引， 发送指定的 entries 记录
+	// 查找待发送的消息，当前 Leader 节点根据每个目标节点的 Next 索引， 发送指定的 entries 记录
 	term, errt := r.raftLog.term(pr.Next - 1)
 	ents, erre := r.raftLog.entries(pr.Next, r.maxMsgSize)
 	if len(ents) == 0 && !sendIfEmpty {
@@ -477,12 +477,13 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 	// 如果查找目标节点对应的 term 或 entries 失败， 就发送快照消息 MsgSnap
 	if errt != nil || erre != nil { // send snapshot if we failed to get term or entries
 		if !pr.RecentActive {
+			// 如果 Leader 发现该 Follower 已经不再存活状态，就不会进行任何处理
 			r.logger.Debugf("ignore sending snapshot to %x since it is not recently active", to)
 			return false
 		}
 
 		m.Type = pb.MsgSnap
-		snapshot, err := r.raftLog.snapshot()
+		snapshot, err := r.raftLog.snapshot() // 获取快照数据
 		if err != nil {
 			if err == ErrSnapshotTemporarilyUnavailable {
 				r.logger.Debugf("%x failed to send snapshot to %x because snapshot is temporarily unavailable", r.id, to)
@@ -497,6 +498,7 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 		sindex, sterm := snapshot.Metadata.Index, snapshot.Metadata.Term
 		r.logger.Debugf("%x [firstindex: %d, commit: %d] sent snapshot[index: %d, term: %d] to %x [%s]",
 			r.id, r.raftLog.firstIndex(), r.raftLog.committed, sindex, sterm, to, pr)
+		// 将目标 Follower 节点对应的 Process 切换成 ProcessStageSnapshot 状态， 用 Process.PendingSnapshot 字段记录快照数据的信息
 		pr.BecomeSnapshot(sindex)
 		r.logger.Debugf("%x paused sending replication messages to %x [%s]", r.id, to, pr)
 	} else {
@@ -1318,24 +1320,32 @@ func stepLeader(r *raft, m pb.Message) error {
 		// code here and should likely be updated to match (or even better, the
 		// logic pulled into a newly created Progress state machine handler).
 		if !m.Reject {
+			// 之前的 MsgSnap 消息发生异常，切换对应 Follower 节点的状态
 			pr.BecomeProbe()
 			r.logger.Debugf("%x snapshot succeeded, resumed sending replication messages to %x [%s]", r.id, m.From, pr)
 		} else {
 			// NB: the order here matters or we'll be probing erroneously from
 			// the snapshot index, but the snapshot never applied.
+			// 发送 MsgSnap 消息失败，这里会清空对应 Process.PendingSnapshot 字段
 			pr.PendingSnapshot = 0
 			pr.BecomeProbe()
 			r.logger.Debugf("%x snapshot failed, resumed sending replication messages to %x [%s]", r.id, m.From, pr)
 		}
+
+		// 无论 MsgSnap 消息发送是否失败，都会将对应 Process 切换成 StateProbe 状态，之后发送单条消息进行试探
+
 		// If snapshot finish, wait for the MsgAppResp from the remote node before sending
 		// out the next MsgApp.
 		// If snapshot failure, wait for a heartbeat interval before next try
+		// 暂停 Leader 节点向该 Follower 节点继续发送信息，如果发送 MsgSnap 消息成功了，则待 Leader 节点收到相应信息(MsgAppResp消息)，即可继续发送后续 MsgApp消息
+		// 如果发送 MsgSnap 消息失败了，Leader 会等收到 MsgHeartbeatResp 消息时，才会重新开始发送后续消息。
 		pr.ProbeSent = true
 	case pb.MsgUnreachable:
+		// 当 Follower 节点不连通时，继续发送 MsgApp 消息，会有大量消息丢失
 		// During optimistic replication, if the remote becomes unreachable,
 		// there is huge probability that a MsgApp is lost.
 		if pr.State == tracker.StateReplicate {
-			pr.BecomeProbe()
+			pr.BecomeProbe() // 将 Follower 节点对应的 Process 实例切换成 ProcessStateProbe 状态
 		}
 		r.logger.Debugf("%x failed to send message to %x because it is unreachable [%s]", r.id, m.From, pr)
 	case pb.MsgTransferLeader:
@@ -1442,9 +1452,9 @@ func stepFollower(r *raft, m pb.Message) error {
 		// 处理心跳请求消息
 		r.handleHeartbeat(m)
 	case pb.MsgSnap:
-		r.electionElapsed = 0
+		r.electionElapsed = 0 // 重置 raft.electionElapsed， 防止发生选举
 		r.lead = m.From
-		r.handleSnapshot(m)
+		r.handleSnapshot(m) // 通过 MsgSnap 中的快照数据，重建当前节点的 raftlog
 	case pb.MsgTransferLeader:
 		if r.lead == None {
 			r.logger.Infof("%x no leader at term %d; dropping leader transfer msg", r.id, r.Term)
@@ -1509,13 +1519,17 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 	r.send(pb.Message{To: m.From, Type: pb.MsgHeartbeatResp, Context: m.Context})
 }
 
+// 根据 MsgSnap 消息重建本地 raftLog
 func (r *raft) handleSnapshot(m pb.Message) {
 	sindex, sterm := m.Snapshot.Metadata.Index, m.Snapshot.Metadata.Term
+	// 进行本地日志重建， 返回的 MsgAppResp 消息的 reject 字段始终为 false
 	if r.restore(m.Snapshot) {
+		// 重建成功
 		r.logger.Infof("%x [commit: %d] restored snapshot [index: %d, term: %d]",
 			r.id, r.raftLog.committed, sindex, sterm)
 		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: r.raftLog.lastIndex()})
 	} else {
+		// 重建失败
 		r.logger.Infof("%x [commit: %d] ignored snapshot [index: %d, term: %d]",
 			r.id, r.raftLog.committed, sindex, sterm)
 		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: r.raftLog.committed})
@@ -1527,8 +1541,10 @@ func (r *raft) handleSnapshot(m pb.Message) {
 // ignored, either because it was obsolete or because of an error.
 func (r *raft) restore(s pb.Snapshot) bool {
 	if s.Metadata.Index <= r.raftLog.committed {
+		// 无需重建
 		return false
 	}
+
 	if r.state != StateFollower {
 		// This is defense-in-depth: if the leader somehow ended up applying a
 		// snapshot, it could move into a new term without moving into a
