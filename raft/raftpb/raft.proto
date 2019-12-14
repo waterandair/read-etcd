@@ -50,7 +50,7 @@ enum MessageType {
 	MsgUnreachable     = 10;  // Leader 节点发送 MsgSnap 消息失败后，会调用 ReportUnreachable() 方法发送 MsgUnreachable 消息
 	MsgSnapStatus      = 11;  // Leader 节点发送 MsgSnap 消息失败后，会调用 ReportSnapshot() 方法发送 MsgSnapStatus 消息
 	MsgCheckQuorum     = 12;  // 本地消息，检测当前节点是否与发部分节点连通
-	MsgTransferLeader  = 13;
+	MsgTransferLeader  = 13;  // 本地消息，Leader 节点转移
 	MsgTimeoutNow      = 14;
 	MsgReadIndex       = 15;  // 客户端只读请求
 	MsgReadIndexResp   = 16;  // 客户端只读请求的响应

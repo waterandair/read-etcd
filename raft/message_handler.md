@@ -63,5 +63,10 @@ Leader 节点尝试向集群中的 Follower 节点发送 MsgApp 消息时，如�
 
 当 Follower 节点宕机时间比较长时，就可能会出现发送 MsgSnap 消息的场景
 
+##### MsgTransferLeader 和 MsgTimeoutNow 
+MsgTransferLeader 是当 Leader 节点迁移时，Leader 节点的本地消息，Leader 节点对 MsgTransferLeader 处理中验证是否可以进行迁移，如果可以迁移，会向目标 Follower 
+发送 MsgTimeoutNow 消息。   
+Leader 在进行迁移时，会停止处理客户端的 MsgProp 请求
+
 
 
