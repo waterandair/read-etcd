@@ -584,6 +584,7 @@ func (r *raft) advance(rd Ready) {
 	// new Commit index, this does not mean that we're also applying
 	// all of the new entries due to commit pagination by size.
 	if index := rd.appliedCursor(); index > 0 {
+		// 更新已应用的的记录位置
 		r.raftLog.appliedTo(index)
 		if r.prs.Config.AutoLeave && index >= r.pendingConfIndex && r.state == StateLeader {
 			// If the current (and most recent, at least for this leader's term)
@@ -610,9 +611,12 @@ func (r *raft) advance(rd Ready) {
 	r.reduceUncommittedSize(rd.CommittedEntries)
 
 	if len(rd.Entries) > 0 {
+		// Ready.Entries 中的记录已经被持久化，这里会向 unstable 中对应的记录清掉，并更新其 offset， 也可能缩小 unstable 底层保存 Entries 记录的数组
 		e := rd.Entries[len(rd.Entries)-1]
 		r.raftLog.stableTo(e.Index, e.Term)
 	}
+
+	// ready 中封装的快照数据已经被持久化，这里会清空 unstable 中记录的快照数据
 	if !IsEmptySnap(rd.Snapshot) {
 		r.raftLog.stableSnapTo(rd.Snapshot.Metadata.Index)
 	}
