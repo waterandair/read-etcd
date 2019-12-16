@@ -1,4 +1,6 @@
+# 使用 etcd-raft 模块的最佳实践
 # raftexample
+
 
 raftexample is an example usage of etcd's [raft library](../../raft). It provides a simple REST API for a key-value store cluster backed by the [Raft][raft] consensus algorithm.
 

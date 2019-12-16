@@ -38,36 +38,82 @@ import (
 )
 
 // A key-value stream backed by raft
+// 对 etcd-raft 模块的一层封装，对上层模块提供了更加简介，方便的调用方式。
 type raftNode struct {
-	proposeC    <-chan string            // proposed messages (k,v)
+	// 添加键值对数据，收到 http PUT 请求后，httpKVAPI 会将请求中的键值信息通过 proposeC 通道传给 raftNode 进行处理
+	proposeC <-chan string // proposed messages (k,v)
+
+	// http POST 请求表示修改集群节点的请求，
 	confChangeC <-chan raftpb.ConfChange // proposed cluster config changes
-	commitC     chan<- *string           // entries committed to log (k,v)
-	errorC      chan<- error             // errors from raft session
 
-	id          int      // client ID for raft session
-	peers       []string // raft peer URLs
-	join        bool     // node is joining an existing cluster
-	waldir      string   // path to WAL directory
-	snapdir     string   // path to snapshot directory
+	// 在创建 raftNode 后会返回 commitC，errorC， snapshotterReady 三个通道
+	// raftNode 会将 etcd-raft 模块返回的待应用 Entry 记录写入 commitC 通道，另一方面，kvstore 会动 CommitC 通道中读取这些待应用的 Entry 记录并保存其中的键值对信息
+	commitC chan<- *string // entries committed to log (k,v)
+
+	// 当 etcd-raft 模块关闭或出现异常的时候，会通过 errorC 通道将该信息通知上层模块
+	errorC chan<- error // errors from raft session
+
+	// 记录当前节点ID
+	id int // client ID for raft session
+
+	// 当前集群中所有节点的地址，当前节点会通过该字段中保存的地址向集群中其他节点发送消息
+	peers []string // raft peer URLs
+
+	// 表示当前节点是否是后续加入到一个集群的节点
+	join bool // node is joining an existing cluster
+
+	// 存放 WAL 日志文件的目录
+	waldir string // path to WAL directory
+
+	// 存放快照文件的目录
+	snapdir string // path to snapshot directory
+
+	// 用于获取快照数据.
 	getSnapshot func() ([]byte, error)
-	lastIndex   uint64 // index of log at start
 
-	confState     raftpb.ConfState
+	// 在节点启动，回放 WAL 日志结束之后，记录最后一条 Entry 记录的索引值
+	lastIndex uint64 // index of log at start
+
+	// 记录当前集群的状态，从 node.confstatec 总获取的
+	confState raftpb.ConfState
+
+	// 保存当前快照所包含的最后一条 Entry 记录的索引值
 	snapshotIndex uint64
-	appliedIndex  uint64
+
+	// 保存上层模块已应用的位置，即最后一条 Entry 记录的索引值
+	appliedIndex uint64
 
 	// raft backing for the commit/error channel
-	node        raft.Node
-	raftStorage *raft.MemoryStorage
-	wal         *wal.WAL
+	// etcd-raft 中的 node
+	node raft.Node
 
-	snapshotter      *snap.Snapshotter
+	// raftLog.storage 的一个基于内存大的实现
+	raftStorage *raft.MemoryStorage
+
+	// 负责 WAL 日志的管理。、
+	// 当节点收到一条 Entry 记录时，首先将其保存到 raftLog.unstable 中，
+	// 之后会将其封装到 Ready 实例中并交给上层模块发送给集群中其他节点，并完成持久化
+	wal *wal.WAL
+
+	// 负责管理快照数据，etcd-raft 模块并没有完成快照数据的管理，而是将其独立成一个单独的模块
+	snapshotter *snap.Snapshotter
+
+	// 用于通知上层模块 snapshotter 实例是否已经创建完成
 	snapshotterReady chan *snap.Snapshotter // signals when snapshotter is ready
 
+	// 两次生成快照之间间隔的 Entry 记录数，即当前节点每处理一定量的 Entry 记录，就触发一次快照数据的创建。
+	// 每次生成快照时，即可释放一定量的 WAL 日志及 raftLog 中保存的 Entry 记录，从而避免大量 Entry 记录带来的
+	// 内存压力及大量的 WAL 日志文件带来的磁盘压力。另外，定期创建快照也能减少节点重启时回放 WAL 日志数量，加速了启动速度。
 	snapCount uint64
+
+	// 节点待发送的消息只是记录到了 raft.msgs 中，etcd-raft 并没有提供网络层的实现，而是由上层模块决定两个节点之间如何通信。
+	// 这样可以给通信层的实现带了更好的灵活性，比如如果两个节点在一个服务器中，完全可以使用共享内存的方式实现节点间的通信
 	transport *rafthttp.Transport
-	stopc     chan struct{} // signals proposal channel closed
+
+	stopc chan struct{} // signals proposal channel closed
+
 	httpstopc chan struct{} // signals http server to shutdown
+
 	httpdonec chan struct{} // signals http server shutdown complete
 }
 
@@ -78,8 +124,15 @@ var defaultSnapshotCount uint64 = 10000
 // provided the proposal channel. All log entries are replayed over the
 // commit channel, followed by a nil message (to indicate the channel is
 // current), then new log entries. To shutdown, close proposeC and read errorC.
-func newRaftNode(id int, peers []string, join bool, getSnapshot func() ([]byte, error), proposeC <-chan string,
-	confChangeC <-chan raftpb.ConfChange) (<-chan *string, <-chan error, <-chan *snap.Snapshotter) {
+//
+func newRaftNode(
+	id int,
+	peers []string,
+	join bool,
+	getSnapshot func() ([]byte, error),
+	proposeC <-chan string,
+	confChangeC <-chan raftpb.ConfChange,
+) (<-chan *string, <-chan error, <-chan *snap.Snapshotter) {
 
 	commitC := make(chan *string)
 	errorC := make(chan error)
@@ -92,17 +145,20 @@ func newRaftNode(id int, peers []string, join bool, getSnapshot func() ([]byte, 
 		id:          id,
 		peers:       peers,
 		join:        join,
+		// 初始化存放 WAL 日志和 SnapShot 文件的目录
 		waldir:      fmt.Sprintf("raftexample-%d", id),
 		snapdir:     fmt.Sprintf("raftexample-%d-snap", id),
 		getSnapshot: getSnapshot,
-		snapCount:   defaultSnapshotCount,
+		snapCount:   defaultSnapshotCount,  // 默认 10000
 		stopc:       make(chan struct{}),
 		httpstopc:   make(chan struct{}),
 		httpdonec:   make(chan struct{}),
 
 		snapshotterReady: make(chan *snap.Snapshotter, 1),
-		// rest of structure populated after WAL replay
+		// rest of structure populated after WAL replay 其余字段在 WAL 日志回放完成之后才会初始化
 	}
+
+	// 单独启动一个 goroutine 执行 startRaft() 方法，在该方法中完成剩余初始化操作
 	go rc.startRaft()
 	return commitC, errorC, rc.snapshotterReady
 }

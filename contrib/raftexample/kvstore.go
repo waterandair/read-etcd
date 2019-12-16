@@ -25,6 +25,7 @@ import (
 )
 
 // a key-value store backed by raft
+// kv 存储
 type kvstore struct {
 	proposeC    chan<- string // channel for proposing updates
 	mu          sync.RWMutex

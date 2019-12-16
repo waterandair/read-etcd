@@ -24,6 +24,7 @@ import (
 )
 
 // Handler for a http based key-value store backed by raft
+// 对外提供的 http 接口
 type httpKVAPI struct {
 	store       *kvstore
 	confChangeC chan<- raftpb.ConfChange
