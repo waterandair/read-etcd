@@ -29,8 +29,7 @@ var ErrStepLocalMsg = errors.New("raft: cannot step raft local message")
 var ErrStepPeerNotFound = errors.New("raft: cannot step as peer not found")
 
 // RawNode is a thread-unsafe Node.
-// The methods of this struct correspond to the methods of Node and are described
-// more fully there.
+// The methods of this struct correspond to the methods of Node and are described more fully there.
 type RawNode struct {
 	raft       *raft
 	prevSoftSt *SoftState
@@ -45,7 +44,7 @@ type RawNode struct {
 // state manually by setting up a Storage that has a first index > 1 and which
 // stores the desired ConfState as its InitialState.
 func NewRawNode(config *Config) (*RawNode, error) {
-	r := newRaft(config)
+	r := newRaft(config)  // 根据 Config 配置信息创建 raft 实例
 	rn := &RawNode{
 		raft: r,
 	}
