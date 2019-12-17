@@ -266,6 +266,7 @@ func (rc *raftNode) openWAL(snapshot *raftpb.Snapshot) *wal.WAL {
 		w.Close()
 	}
 
+	// 创建 walsnap.Snapshot 实例并初始化 Index 和 Term
 	walsnap := walpb.Snapshot{}
 	if snapshot != nil {
 		walsnap.Index, walsnap.Term = snapshot.Metadata.Index, snapshot.Metadata.Term
@@ -282,24 +283,31 @@ func (rc *raftNode) openWAL(snapshot *raftpb.Snapshot) *wal.WAL {
 // replayWAL replays WAL entries into the raft instance.
 func (rc *raftNode) replayWAL() *wal.WAL {
 	log.Printf("replaying WAL of member %d", rc.id)
+	// 读取快照文件
 	snapshot := rc.loadSnapshot()
+	// 根据快照元数据创建 WAL 实例
 	w := rc.openWAL(snapshot)
+	// 读取快照文件之后的全部 WAL 日志数据，并获取动态信息
 	_, st, ents, err := w.ReadAll()
 	if err != nil {
 		log.Fatalf("raftexample: failed to read WAL (%v)", err)
 	}
 	rc.raftStorage = raft.NewMemoryStorage()
 	if snapshot != nil {
-		rc.raftStorage.ApplySnapshot(*snapshot)
+		rc.raftStorage.ApplySnapshot(*snapshot)  // 将快照数据加载到 MemoryStorage 中
 	}
-	rc.raftStorage.SetHardState(st)
+	rc.raftStorage.SetHardState(st)  // 将读取 wal 日志之后得到的 hardstate 加载到 MemoryStorage 中
 
 	// append to storage so raft starts at the right place in log
-	rc.raftStorage.Append(ents)
+	rc.raftStorage.Append(ents)  // 将读取 wal 日志得到的 entries 记录加载到 MemoryStorage 中
+
 	// send nil once lastIndex is published so client knows commit channel is current
+	// 快照之后存在已经持久化的 Entry 记录，这些记录需要回放到上层应用的状态机中
 	if len(ents) > 0 {
-		rc.lastIndex = ents[len(ents)-1].Index
+		rc.lastIndex = ents[len(ents)-1].Index  // 记录回放的位置
 	} else {
+		// 快照之后不存在已经持久化的 Entry 记录，则向 commitC 中写入 nil，
+		// 当 wal 日志全部回放完成之后，也会向 commitC 中写入 nil 作为信号
 		rc.commitC <- nil
 	}
 	return w
@@ -313,42 +321,57 @@ func (rc *raftNode) writeError(err error) {
 	rc.node.Stop()
 }
 
+
+// 3. 创建 raft.Config 实例，其中包含了启动 etcd-raft 模块的所有配置
+// 4. 初始化底层 etcd-raft 模块，得到 node 实例
+// 5. 创建 Transport 实例，负责各个节点间的网络通信，在 rafthttp 包中实现
+// 6. 建立与集群总其他节点的网络连接
+// 7. 启动网络组件， 其中会监听当前节点与集群中各个其他节点的网络连接，并进行节点之间的消息读写
+// 8. 启动两个后台 goroutine， 处理上层模块与底层 etcd-raft 模块的交互
 func (rc *raftNode) startRaft() {
+	// 检测快照数据目录是否村存在
 	if !fileutil.Exist(rc.snapdir) {
 		if err := os.Mkdir(rc.snapdir, 0750); err != nil {
 			log.Fatalf("raftexample: cannot create dir for snapshot (%v)", err)
 		}
 	}
+	//  创建 Snapshotter，它提供了快照管理能力， 通过 rc.snapshotterReady 返回给上层模块
 	rc.snapshotter = snap.New(zap.NewExample(), rc.snapdir)
 	rc.snapshotterReady <- rc.snapshotter
 
-	oldwal := wal.Exist(rc.waldir)
-	rc.wal = rc.replayWAL()
+	// 2. 创建 WAL 实例，加载快照并回访 WAL 日志
+	oldwal := wal.Exist(rc.waldir)  // 检测 waldir 目录下是否存在旧的 wal 日志文件
+	rc.wal = rc.replayWAL()  // 先加载快照数据，然后重放 wal 日志文件
 
+	// 3. 创建 raft.Config 实例
 	rpeers := make([]raft.Peer, len(rc.peers))
 	for i := range rpeers {
 		rpeers[i] = raft.Peer{ID: uint64(i + 1)}
 	}
 	c := &raft.Config{
 		ID:                        uint64(rc.id),
-		ElectionTick:              10,
-		HeartbeatTick:             1,
-		Storage:                   rc.raftStorage,
-		MaxSizePerMsg:             1024 * 1024,
-		MaxInflightMsgs:           256,
+		ElectionTick:              10,      // election_timeout
+		HeartbeatTick:             1,       // heartbeat_timeout
+		Storage:                   rc.raftStorage,  // 持久化存储，此处为 MemoryStorage
+		MaxSizePerMsg:             1024 * 1024,  // 每条消息的最大长度
+		MaxInflightMsgs:           256,  // 已发送但未收到响应的消息个数上限
 		MaxUncommittedEntriesSize: 1 << 30,
 	}
 
+	// 4. 判断是首次启动还是重启， 初始化 etcd-raft 模块
 	if oldwal {
+		// 重启
 		rc.node = raft.RestartNode(c)
 	} else {
 		startPeers := rpeers
 		if rc.join {
 			startPeers = nil
 		}
+		// 首次启动
 		rc.node = raft.StartNode(c, startPeers)
 	}
 
+	// 5. 创建 Transport 实例并启动
 	rc.transport = &rafthttp.Transport{
 		Logger:      zap.NewExample(),
 		ID:          types.ID(rc.id),
@@ -359,14 +382,16 @@ func (rc *raftNode) startRaft() {
 		ErrorC:      make(chan error),
 	}
 
-	rc.transport.Start()
+	rc.transport.Start()  // 启动网络服务相关组件
 	for i := range rc.peers {
 		if i+1 != rc.id {
 			rc.transport.AddPeer(types.ID(i+1), []string{rc.peers[i]})
 		}
 	}
 
+	// 启动一个 goroutine， 其中会监听当前节点与集群中其他节点之间的网络连接
 	go rc.serveRaft()
+	// 处理上层应用与底层 etcd-raft 模块的交互
 	go rc.serveChannels()
 }
 
@@ -444,21 +469,24 @@ func (rc *raftNode) serveChannels() {
 	rc.appliedIndex = snap.Metadata.Index
 
 	defer rc.wal.Close()
-
+	// 创建一个每个 100ms 触发一次的定时器，逻辑上， 100ms 就是 etcd-raft 中最小的时间单位，该定时器每触发一次，逻辑时钟就推进一次
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
 	// send proposals over raft
+	// 单独启动一个 goroutine 负责将 propose，confChangeC 通道上接收到的数据传递给 etcd-raft 进行处理0000
 	go func() {
 		confChangeCount := uint64(0)
 
 		for rc.proposeC != nil && rc.confChangeC != nil {
 			select {
-			case prop, ok := <-rc.proposeC:
+			case prop, ok := <-rc.proposeC:  // 接收上层通过 proposeC 通道发来的数据
 				if !ok {
+					// 如果发生异常，置为空
 					rc.proposeC = nil
 				} else {
 					// blocks until accepted by raft state machine
+					// 将数据传入底层 etcd-raft 组件进行处理
 					rc.node.Propose(context.TODO(), []byte(prop))
 				}
 
@@ -466,7 +494,7 @@ func (rc *raftNode) serveChannels() {
 				if !ok {
 					rc.confChangeC = nil
 				} else {
-					confChangeCount++
+					confChangeCount++  // 统计集群变更请求的个数，并将其作为ID
 					cc.ID = confChangeCount
 					rc.node.ProposeConfChange(context.TODO(), cc)
 				}
@@ -476,13 +504,16 @@ func (rc *raftNode) serveChannels() {
 		close(rc.stopc)
 	}()
 
+	// 处理 etcd-raft 返回给上层模块的数据及其它相关的操作
 	// event loop on raft state machine updates
 	for {
 		select {
 		case <-ticker.C:
+			// ticker 定时器触发一次（100ms），就会推进 etcd-raft 组件的逻辑时钟
 			rc.node.Tick()
 
 		// store raft entries to wal, then publish over commit channel
+		// 从 node.readyc 通道中读取 etcd-raft 给上层模块返回的信息
 		case rd := <-rc.node.Ready():
 			rc.wal.Save(rd.HardState, rd.Entries)
 			if !raft.IsEmptySnap(rd.Snapshot) {
@@ -511,16 +542,19 @@ func (rc *raftNode) serveChannels() {
 }
 
 func (rc *raftNode) serveRaft() {
+	// 获取当前节点的 url 地址
 	url, err := url.Parse(rc.peers[rc.id-1])
 	if err != nil {
 		log.Fatalf("raftexample: Failed parsing URL (%v)", err)
 	}
 
+	// 创建  StoppableListener 实例， 它实现了 net.Listener 接口，会与 http.Server 配合实现对当前节点的 url 地址进行监听
 	ln, err := newStoppableListener(url.Host, rc.httpstopc)
 	if err != nil {
 		log.Fatalf("raftexample: Failed to listen rafthttp (%v)", err)
 	}
 
+	// 创建 http.Server 实例
 	err = (&http.Server{Handler: rc.transport.Handler()}).Serve(ln)
 	select {
 	case <-rc.httpstopc:
