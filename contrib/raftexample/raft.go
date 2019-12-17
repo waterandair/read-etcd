@@ -149,7 +149,7 @@ func newRaftNode(
 		waldir:      fmt.Sprintf("raftexample-%d", id),
 		snapdir:     fmt.Sprintf("raftexample-%d-snap", id),
 		getSnapshot: getSnapshot,
-		snapCount:   defaultSnapshotCount,  // 默认 10000
+		snapCount:   defaultSnapshotCount, // 默认 10000
 		stopc:       make(chan struct{}),
 		httpstopc:   make(chan struct{}),
 		httpdonec:   make(chan struct{}),
@@ -167,16 +167,23 @@ func (rc *raftNode) saveSnap(snap raftpb.Snapshot) error {
 	// must save the snapshot index to the WAL before saving the
 	// snapshot to maintain the invariant that we only Open the
 	// wal at previously-saved snapshot indexes.
+	// 根据快照元数据，创建 walpb.Snapshot 实例
 	walSnap := walpb.Snapshot{
 		Index: snap.Metadata.Index,
 		Term:  snap.Metadata.Term,
 	}
+
+	// WAL 将快照元数据封装成一条日志记录下来
 	if err := rc.wal.SaveSnapshot(walSnap); err != nil {
 		return err
 	}
+
+	// 将新快照数据写入快照文件
 	if err := rc.snapshotter.SaveSnap(snap); err != nil {
 		return err
 	}
+
+	// 根据快照的元数据，释放掉一些无用的 WAL 日志文件的句柄
 	return rc.wal.ReleaseLockTo(snap.Metadata.Index)
 }
 
@@ -188,6 +195,7 @@ func (rc *raftNode) entriesToApply(ents []raftpb.Entry) (nents []raftpb.Entry) {
 	if firstIdx > rc.appliedIndex+1 {
 		log.Fatalf("first index of committed entry[%d] should <= progress.appliedIndex[%d]+1", firstIdx, rc.appliedIndex)
 	}
+	// 过滤掉已被应用过的 Entry 记录
 	if rc.appliedIndex-firstIdx+1 < uint64(len(ents)) {
 		nents = ents[rc.appliedIndex-firstIdx+1:]
 	}
@@ -196,25 +204,30 @@ func (rc *raftNode) entriesToApply(ents []raftpb.Entry) (nents []raftpb.Entry) {
 
 // publishEntries writes committed log entries to commit channel and returns
 // whether all entries could be published.
+// 将待应用的 Entry 记录写入 commitC 通道中，后续 kvstore 就可以读取 commitC 通道并保存响应的键值对数据d
 func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 	for i := range ents {
 		switch ents[i].Type {
 		case raftpb.EntryNormal:
+			// 如果 entry.data 的值为空，直接忽略
 			if len(ents[i].Data) == 0 {
 				// ignore empty messages
 				break
 			}
 			s := string(ents[i].Data)
 			select {
-			case rc.commitC <- &s:
+			case rc.commitC <- &s: // 将数据写入通道， kvstore 会从中读取并记录
 			case <-rc.stopc:
 				return false
 			}
 
 		case raftpb.EntryConfChange:
+			// 底层 etcd-raft 组件进行处理
 			var cc raftpb.ConfChange
 			cc.Unmarshal(ents[i].Data)
 			rc.confState = *rc.node.ApplyConfChange(cc)
+
+			// 除了底层 etcd-raft 需要做处理，网络层也需要做响应的处理，添加或删除 Peer 实例
 			switch cc.Type {
 			case raftpb.ConfChangeAddNode:
 				if len(cc.Context) > 0 {
@@ -230,12 +243,14 @@ func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 		}
 
 		// after commit, update appliedIndex
+		// 处理完成后，更新 raftNode 记录的已提交位置
 		rc.appliedIndex = ents[i].Index
 
 		// special nil commit to signal replay has finished
+		// 此次应用是否为重放的 entry记录，如果是且重放完成，则使用 commitC 通知 kvstore
 		if ents[i].Index == rc.lastIndex {
 			select {
-			case rc.commitC <- nil:
+			case rc.commitC <- nil: // TODO: question
 			case <-rc.stopc:
 				return false
 			}
@@ -294,17 +309,17 @@ func (rc *raftNode) replayWAL() *wal.WAL {
 	}
 	rc.raftStorage = raft.NewMemoryStorage()
 	if snapshot != nil {
-		rc.raftStorage.ApplySnapshot(*snapshot)  // 将快照数据加载到 MemoryStorage 中
+		rc.raftStorage.ApplySnapshot(*snapshot) // 将快照数据加载到 MemoryStorage 中
 	}
-	rc.raftStorage.SetHardState(st)  // 将读取 wal 日志之后得到的 hardstate 加载到 MemoryStorage 中
+	rc.raftStorage.SetHardState(st) // 将读取 wal 日志之后得到的 hardstate 加载到 MemoryStorage 中
 
 	// append to storage so raft starts at the right place in log
-	rc.raftStorage.Append(ents)  // 将读取 wal 日志得到的 entries 记录加载到 MemoryStorage 中
+	rc.raftStorage.Append(ents) // 将读取 wal 日志得到的 entries 记录加载到 MemoryStorage 中
 
 	// send nil once lastIndex is published so client knows commit channel is current
 	// 快照之后存在已经持久化的 Entry 记录，这些记录需要回放到上层应用的状态机中
 	if len(ents) > 0 {
-		rc.lastIndex = ents[len(ents)-1].Index  // 记录回放的位置
+		rc.lastIndex = ents[len(ents)-1].Index // 记录回放的位置
 	} else {
 		// 快照之后不存在已经持久化的 Entry 记录，则向 commitC 中写入 nil，
 		// 当 wal 日志全部回放完成之后，也会向 commitC 中写入 nil 作为信号
@@ -320,7 +335,6 @@ func (rc *raftNode) writeError(err error) {
 	close(rc.errorC)
 	rc.node.Stop()
 }
-
 
 // 3. 创建 raft.Config 实例，其中包含了启动 etcd-raft 模块的所有配置
 // 4. 初始化底层 etcd-raft 模块，得到 node 实例
@@ -340,8 +354,8 @@ func (rc *raftNode) startRaft() {
 	rc.snapshotterReady <- rc.snapshotter
 
 	// 2. 创建 WAL 实例，加载快照并回访 WAL 日志
-	oldwal := wal.Exist(rc.waldir)  // 检测 waldir 目录下是否存在旧的 wal 日志文件
-	rc.wal = rc.replayWAL()  // 先加载快照数据，然后重放 wal 日志文件
+	oldwal := wal.Exist(rc.waldir) // 检测 waldir 目录下是否存在旧的 wal 日志文件
+	rc.wal = rc.replayWAL()        // 先加载快照数据，然后重放 wal 日志文件
 
 	// 3. 创建 raft.Config 实例
 	rpeers := make([]raft.Peer, len(rc.peers))
@@ -350,11 +364,11 @@ func (rc *raftNode) startRaft() {
 	}
 	c := &raft.Config{
 		ID:                        uint64(rc.id),
-		ElectionTick:              10,      // election_timeout
-		HeartbeatTick:             1,       // heartbeat_timeout
-		Storage:                   rc.raftStorage,  // 持久化存储，此处为 MemoryStorage
-		MaxSizePerMsg:             1024 * 1024,  // 每条消息的最大长度
-		MaxInflightMsgs:           256,  // 已发送但未收到响应的消息个数上限
+		ElectionTick:              10,             // election_timeout
+		HeartbeatTick:             1,              // heartbeat_timeout
+		Storage:                   rc.raftStorage, // 持久化存储，此处为 MemoryStorage
+		MaxSizePerMsg:             1024 * 1024,    // 每条消息的最大长度
+		MaxInflightMsgs:           256,            // 已发送但未收到响应的消息个数上限
 		MaxUncommittedEntriesSize: 1 << 30,
 	}
 
@@ -382,7 +396,7 @@ func (rc *raftNode) startRaft() {
 		ErrorC:      make(chan error),
 	}
 
-	rc.transport.Start()  // 启动网络服务相关组件
+	rc.transport.Start() // 启动网络服务相关组件
 	for i := range rc.peers {
 		if i+1 != rc.id {
 			rc.transport.AddPeer(types.ID(i+1), []string{rc.peers[i]})
@@ -420,8 +434,11 @@ func (rc *raftNode) publishSnapshot(snapshotToSave raftpb.Snapshot) {
 	if snapshotToSave.Metadata.Index <= rc.appliedIndex {
 		log.Fatalf("snapshot index [%d] should > progress.appliedIndex [%d]", snapshotToSave.Metadata.Index, rc.appliedIndex)
 	}
+
+	// 使用 commitC 通道通知上层应用加载新生成的快照数据
 	rc.commitC <- nil // trigger kvstore to load snapshot
 
+	// 记录新快照的元数据
 	rc.confState = snapshotToSave.Metadata.ConfState
 	rc.snapshotIndex = snapshotToSave.Metadata.Index
 	rc.appliedIndex = snapshotToSave.Metadata.Index
@@ -474,13 +491,13 @@ func (rc *raftNode) serveChannels() {
 	defer ticker.Stop()
 
 	// send proposals over raft
-	// 单独启动一个 goroutine 负责将 propose，confChangeC 通道上接收到的数据传递给 etcd-raft 进行处理0000
+	// 单独启动一个 goroutine 负责将 propose，confChangeC 通道上接收到的数据传递给 etcd-raft 进行处理
 	go func() {
 		confChangeCount := uint64(0)
 
 		for rc.proposeC != nil && rc.confChangeC != nil {
 			select {
-			case prop, ok := <-rc.proposeC:  // 接收上层通过 proposeC 通道发来的数据
+			case prop, ok := <-rc.proposeC: // 接收上层通过 proposeC 通道发来的数据
 				if !ok {
 					// 如果发生异常，置为空
 					rc.proposeC = nil
@@ -494,7 +511,7 @@ func (rc *raftNode) serveChannels() {
 				if !ok {
 					rc.confChangeC = nil
 				} else {
-					confChangeCount++  // 统计集群变更请求的个数，并将其作为ID
+					confChangeCount++ // 统计集群变更请求的个数，并将其作为ID
 					cc.ID = confChangeCount
 					rc.node.ProposeConfChange(context.TODO(), cc)
 				}
@@ -515,26 +532,41 @@ func (rc *raftNode) serveChannels() {
 		// store raft entries to wal, then publish over commit channel
 		// 从 node.readyc 通道中读取 etcd-raft 给上层模块返回的信息
 		case rd := <-rc.node.Ready():
+			// 将当前 etcd-raft 组件的状态信息，以及待持久化的 Entries 记录先记录到 WAL 日志中， 即使之后宕机，这些信息也可以在节点下次启动时，通过前面回放 WAL 日志的方式进行恢复
 			rc.wal.Save(rd.HardState, rd.Entries)
+
+			// 检测 etcd-raft 生成了新的快照
 			if !raft.IsEmptySnap(rd.Snapshot) {
+				// 将新的快照数据写入快照文件中
 				rc.saveSnap(rd.Snapshot)
+				// 将新快照持久化
 				rc.raftStorage.ApplySnapshot(rd.Snapshot)
+				// 通知上层应用加载新快照
 				rc.publishSnapshot(rd.Snapshot)
 			}
+
+			// 将待持久化的 Entry 记录追加到 raftStorage 中完成持久化
 			rc.raftStorage.Append(rd.Entries)
+			// 将待发送的消息发送到指定节点
 			rc.transport.Send(rd.Messages)
+			// 将已提交，待应用的 Entry 记录应用到上层状态机中
 			if ok := rc.publishEntries(rc.entriesToApply(rd.CommittedEntries)); !ok {
 				rc.stop()
 				return
 			}
+
+			// 随着节点的运行, WAL 日志量和 raftLog.storage 中的 Entry 记录会不断增加，所以节点每处理 10000 条 entry 记录，就会触发一次创建快照的过程，
+			// 同时，WAL 会释放一些日志文件的句柄， raftLog.Storage 也会压缩其保存的 Entry 记录
 			rc.maybeTriggerSnapshot()
+
+			// 上层应用处理完该 Ready 实例，通知 etcd-raft 组件准备返回下一个 Ready 实例
 			rc.node.Advance()
 
-		case err := <-rc.transport.ErrorC:
-			rc.writeError(err)
+		case err := <-rc.transport.ErrorC: // 处理网络异常
+			rc.writeError(err) // 关闭与集群中其他节点的网络连接
 			return
 
-		case <-rc.stopc:
+		case <-rc.stopc: // 处理关闭命令
 			rc.stop()
 			return
 		}
