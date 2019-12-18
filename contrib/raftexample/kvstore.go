@@ -25,12 +25,12 @@ import (
 )
 
 // a key-value store backed by raft
-// kv 存储
+// kv 存储, 扮演复制状态机的角色
 type kvstore struct {
-	proposeC    chan<- string // channel for proposing updates
+	proposeC    chan<- string // channel for proposing updates  接收客户端 PUT 请求写入此通道，raftNode 从这里读取数据进行处理
 	mu          sync.RWMutex
 	kvStore     map[string]string // current committed key-value pairs
-	snapshotter *snap.Snapshotter
+	snapshotter *snap.Snapshotter  // 负责读取快照文件
 }
 
 type kv struct {
@@ -41,7 +41,8 @@ type kv struct {
 func newKVStore(snapshotter *snap.Snapshotter, proposeC chan<- string, commitC <-chan *string, errorC <-chan error) *kvstore {
 	s := &kvstore{proposeC: proposeC, kvStore: make(map[string]string), snapshotter: snapshotter}
 	// replay log into key-value map
-	s.readCommits(commitC, errorC)
+	// raftNode 会将待应用的 Entry 写入 commitC 通道，这里将它们读取出来，写入 kvstore
+	s.readCommits(commitC, errorC)  // TODO: question 为什么调用两次，不会阻塞吗
 	// read commits from raft into kvStore map until error
 	go s.readCommits(commitC, errorC)
 	return s
@@ -64,7 +65,7 @@ func (s *kvstore) Propose(k string, v string) {
 
 func (s *kvstore) readCommits(commitC <-chan *string, errorC <-chan error) {
 	for data := range commitC {
-		if data == nil {
+		if data == nil {  // 关键： 读取到 nil 时，表示需要读取快照数据
 			// done replaying log; new data incoming
 			// OR signaled to load snapshot
 			snapshot, err := s.snapshotter.Load()
