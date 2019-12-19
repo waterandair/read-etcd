@@ -294,6 +294,7 @@ func (p *peer) update(urls types.URLs) {
 	p.picker.update(urls)
 }
 
+// 将底层网络连接传递到 streamWriter 中
 func (p *peer) attachOutgoingConn(conn *outgoingConn) {
 	var ok bool
 	switch conn.t {

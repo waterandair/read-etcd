@@ -26,12 +26,13 @@ import (
 // Handler for a http based key-value store backed by raft
 // 对外提供的 http 接口
 type httpKVAPI struct {
-	store       *kvstore
+	store       *kvstore // 简单的持久化存储，raft 协议中的状态机，记录到这里就表示已应用
+	// 发送POST,DELETE 请求，表示集群节点的增加和删除
 	confChangeC chan<- raftpb.ConfChange
 }
 
 func (h *httpKVAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	key := r.RequestURI
+	key := r.RequestURI  // 获取请求的 URI 作为 key
 	defer r.Body.Close()
 	switch {
 	case r.Method == "PUT":
@@ -42,6 +43,7 @@ func (h *httpKVAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// 将键值对序列化后写入 proposeC 通道
 		h.store.Propose(key, string(v))
 
 		// Optimistic-- no waiting for ack from raft. Value is not yet

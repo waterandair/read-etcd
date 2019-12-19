@@ -43,7 +43,7 @@ const (
 var errStopped = errors.New("stopped")
 
 type pipeline struct {
-	peerID types.ID
+	peerID types.ID // 该 pipeline 对应节点的 ID
 
 	tr     *Transport
 	picker *urlPicker
@@ -53,16 +53,18 @@ type pipeline struct {
 	// deprecate when we depercate v2 API
 	followerStats *stats.FollowerStats
 
-	msgc chan raftpb.Message
+	msgc chan raftpb.Message // 从此通道中获取待发送的数据
 	// wait for the handling routines
+	// 同步多个 goroutine 的结束。每个 pipeline 会启动多个后台 goroutine（默认 4 个）来处理 msgc 通道中的消息
 	wg    sync.WaitGroup
 	stopc chan struct{}
 }
 
 func (p *pipeline) start() {
 	p.stopc = make(chan struct{})
+	// 缓冲默认64， 主要是为了防止瞬间网络延迟造成消息丢失
 	p.msgc = make(chan raftpb.Message, pipelineBufSize)
-	p.wg.Add(connPerPipeline)
+	p.wg.Add(connPerPipeline) // 初始化 sync.WaitGroup
 	for i := 0; i < connPerPipeline; i++ {
 		go p.handle()
 	}
@@ -93,14 +95,15 @@ func (p *pipeline) stop() {
 	}
 }
 
+// 读取 msgc 通道的消息，发送给 raft， 发送结束之后会报告发送结果
 func (p *pipeline) handle() {
 	defer p.wg.Done()
 
 	for {
 		select {
-		case m := <-p.msgc:
+		case m := <-p.msgc:  // 获取待发送的 MsgSnap 消息
 			start := time.Now()
-			err := p.post(pbutil.MustMarshal(&m))
+			err := p.post(pbutil.MustMarshal(&m))  // 将消息序列化后，用http请求发送出去
 			end := time.Now()
 
 			if err != nil {
@@ -109,6 +112,8 @@ func (p *pipeline) handle() {
 				if m.Type == raftpb.MsgApp && p.followerStats != nil {
 					p.followerStats.Fail()
 				}
+
+				// 向底层 Raft 报告失败信息
 				p.raft.ReportUnreachable(m.To)
 				if isMsgSnap(m) {
 					p.raft.ReportSnapshot(m.To, raft.SnapshotFailure)
@@ -134,16 +139,18 @@ func (p *pipeline) handle() {
 // post POSTs a data payload to a url. Returns nil if the POST succeeds,
 // error on any failure.
 func (p *pipeline) post(data []byte) (err error) {
-	u := p.picker.pick()
+	u := p.picker.pick()  // 获取对端的url地址
+	// 创建 http post 请求
 	req := createPostRequest(u, RaftPrefix, bytes.NewBuffer(data), "application/protobuf", p.tr.URLs, p.tr.ID, p.tr.ClusterID)
 
 	done := make(chan struct{}, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	req = req.WithContext(ctx)
+	// 监听请求是否需要取消
 	go func() {
 		select {
 		case <-done:
-		case <-p.stopc:
+		case <-p.stopc:  // 如果在请求的发送过程中，pipeline 被关闭，则取消该请求
 			waitSchedule()
 			cancel()
 		}
@@ -158,6 +165,7 @@ func (p *pipeline) post(data []byte) (err error) {
 	defer resp.Body.Close()
 	b, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
+		// 出现异常时，将该url 标识为不可用，再尝试其他url
 		p.picker.unreachable(u)
 		return err
 	}
