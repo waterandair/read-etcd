@@ -9,9 +9,15 @@ option (gogoproto.unmarshaler_all) = true;
 option (gogoproto.goproto_getters_all) = false;
 
 message Record {
-	optional int64 type  = 1 [(gogoproto.nullable) = false];
-	optional uint32 crc  = 2 [(gogoproto.nullable) = false];
-	optional bytes data  = 3;
+    //  Record 的类型：
+    // 1. metadataType: data字段中保存了一些元数据，每个 wal 文件的开头，都会记录一天 metadataType 类型的日志记录
+    // 2. entryType:
+    // 3. stateType: 保存当前集群的状态信息 HardState， 每次批量写入 entryType 类型日志之前，都会先写入一条 stateType 类型的日志
+    // 4. crcType: 记录的数据用来数据校验
+    // 5. snapshotType: 保存快照数据的相关信息（不包含完整的快照）
+	optional int64 type  = 1 [(gogoproto.nullable) = false];  //
+	optional uint32 crc  = 2 [(gogoproto.nullable) = false];  // Record 的校验码
+	optional bytes data  = 3;  // 记录真正的日志数据
 }
 
 message Snapshot {

@@ -72,23 +72,34 @@ var (
 type WAL struct {
 	lg *zap.Logger
 
+	// 存放 wal 日志文件的目录路径
 	dir string // the living directory of the underlay files
 
 	// dirFile is a fd for the wal directory for syncing on Rename
+	// 根据dir创建的File实例
 	dirFile *os.File
 
+	// 每个 wal 日志文件的头部，都会写入元数据
 	metadata []byte           // metadata recorded at the head of each WAL
+	// wal 日志的追加是批量的，每次写入 entryType 类型的日志之后，都会再追加一条 stateType 类型的日志，这里面存了 HardState 信息，记录了当前的 Term，当前节点的投票结果和已提交的日志的位置
 	state    raftpb.HardState // hardstate recorded at the head of WAL
 
+	// 每次读取 wal 日志时，并不会每次都从头开始读取，而是通过这个 start 字段里指定的具体位置。
+	// Index 记录对应快照数据所涵盖的最后一条 Entry 记录的索引值，
+	// Term 字段记录了定 Entry 记录的 Term 值
 	start     walpb.Snapshot // snapshot to start reading
+	// 将二进制数据反序列化成 Record 实例
 	decoder   *decoder       // decoder to decode records
 	readClose func() error   // closer for decode reader
 
 	mu      sync.Mutex
+	// wal 中最后一条Entry记录的索引值
 	enti    uint64   // index of the last entry saved to the wal
 	encoder *encoder // encoder to encode records
 
+	// 当前 wal 实例管理的所有 wal 日志文件对应的句柄
 	locks []*fileutil.LockedFile // the locked files the WAL holds (the name is increasing)
+	// 负责创建新的临时文件，并为日志文件预分配空间
 	fp    *filePipeline
 }
 
@@ -106,6 +117,7 @@ func Create(lg *zap.Logger, dirpath string, metadata []byte) (*WAL, error) {
 			return nil, err
 		}
 	}
+	// 1. 创建临时目录， 并创建编号为 0-0 的 wal 日志文件
 	if err := fileutil.CreateDirAll(tmpdirpath); err != nil {
 		if lg != nil {
 			lg.Warn(
@@ -140,6 +152,7 @@ func Create(lg *zap.Logger, dirpath string, metadata []byte) (*WAL, error) {
 		}
 		return nil, err
 	}
+	// 2. 对新建的临时文件进行空间预分配，默认 64MB
 	if err = fileutil.Preallocate(f.File, SegmentSizeBytes, true); err != nil {
 		if lg != nil {
 			lg.Warn(
@@ -161,7 +174,10 @@ func Create(lg *zap.Logger, dirpath string, metadata []byte) (*WAL, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 记录当前 wal 实例正在管理的日志文件
 	w.locks = append(w.locks, f)
+
+	// 3. 向wal日志文件写入一条 crcType 日志，一条 metadataType 日志， 一条 snapshotType 日志
 	if err = w.saveCrc(0); err != nil {
 		return nil, err
 	}
@@ -172,6 +188,7 @@ func Create(lg *zap.Logger, dirpath string, metadata []byte) (*WAL, error) {
 		return nil, err
 	}
 
+	// 4. 将临时目录重命名，并创建 wal 实例关联的 filePipline 实例
 	if w, err = w.renameWAL(tmpdirpath); err != nil {
 		if lg != nil {
 			lg.Warn(
@@ -192,6 +209,7 @@ func Create(lg *zap.Logger, dirpath string, metadata []byte) (*WAL, error) {
 	}()
 
 	// directory was renamed; sync parent dir to persist rename
+	// 临时目录重命名后，需要将重命名操作刷新到磁盘上
 	pdir, perr := fileutil.OpenDir(filepath.Dir(w.dir))
 	if perr != nil {
 		if lg != nil {

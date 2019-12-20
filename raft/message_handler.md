@@ -68,5 +68,43 @@ MsgTransferLeader 是当 Leader 节点迁移时，Leader 节点的本地消息�
 发送 MsgTimeoutNow 消息。   
 Leader 在进行迁移时，会停止处理客户端的 MsgProp 请求
 
+#### 一条 Entry 的处理流程
+- 客户端向集群发起一次请求，请求中封装的 Entry 会先被 etcd-raft 模块进行处理，etcd-raft 会先将 Entry 记录保存到 raftLog.unstable 中。
+- etcd-raft 模块将该 Entry 记录封装到前面介绍的 Ready 实例中，返回给上层模块进行持久化
+- 上层模块收到带持久化的 Entry 记录后，会先将其记录到 WAL 日志文件中，然后进行持久化操作，最后通知 etcd-raft 模块进行处理
+- 此时，etcd-raft 模块就会将该 Entry 记录从 unstable 移动到 storage 中保存。
+- Entry 记录被复制到集群中的半数以上节点时，该 Entry 记录会被 Leader 节点确定为已提交， 并封装进 Ready 实例返回给上层模块
+- 此时，上层模块即可将该 Ready 实例中携带的待应用的 Entry 记录应用到状态机中
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
